@@ -1,0 +1,13 @@
+name: CellCo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pandas
+  - httpx
+  - mlflow
+  - sqlalchemy
+  - pip
+  - pip:
+      - langchain-ollama
+      - obonet

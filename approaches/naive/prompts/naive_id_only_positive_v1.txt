@@ -1,0 +1,6 @@
+You are given a list of cell types in which a certain gene is reliably expressed. Each cell type is identified only by its Cell Ontology (CL) ID paired with its Uberon tissue ID, in the form CL:xxxxxxx|UBERON:xxxxxxx. No other information is provided — not the gene's name, not any cell type label or description.
+
+Positive cell types (gene is expressed):
+{cell_type_list}
+
+Based only on these identifiers, what do these cell types have in common? Propose the most specific biological property you can infer that could plausibly link them. If you do not recognise enough of these identifiers to say anything specific, say so plainly instead of guessing.

@@ -1,0 +1,7 @@
+.env
+mlflow.db
+mlruns/
+mlartifacts/
+__pycache__/
+*.pyc
+data/ontologies/raw/

@@ -1,0 +1,21 @@
+You are assisting a research pipeline that infers gene function from patterns across cell types. Cell types below are given by their real Cell Ontology (CL) label and the Uberon tissue they were observed in — these have already been resolved for you from the official ontologies, so you do not need to recall or guess what any ID means. Where an entry is marked "(unresolved: ...)", that half genuinely could not be resolved — treat it as missing information, not as a name.
+
+Below is a list of tissues and the cell types observed in each, where a specific (undisclosed) gene is reliably expressed. Each line is one tissue followed by every cell type found there.
+
+Positive set ({n} cell-type/tissue observations across {n_tissues} tissues):
+{cell_type_list}
+
+Task:
+1. Infer the single most specific biological property shared by these cell types that would plausibly explain why a gene is expressed there.
+   - Bad property (too vague, restates input): "these are cells", "epithelial cells", "these cell types are found in various tissues".
+   - Good property (specific, falsifiable, goes beyond the input): "ciliated epithelial cells lining mucosal surfaces of the respiratory and reproductive tracts", "tissue-resident macrophages specialized in phagocytic clearance".
+2. Do not just list or group the tissues/cell types back — the property must be an inference about shared function, lineage, or physiology, not a summary of what was given to you.
+3. If the cell types share no specific property, abstain. Abstaining is the correct answer when the evidence does not support one — it is not a failure.
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it:
+{{
+  "property": "<the inferred property, or null if abstained>",
+  "confidence": <float between 0 and 1>,
+  "rationale": "<2-3 sentences>",
+  "abstained": <true or false>
+}}

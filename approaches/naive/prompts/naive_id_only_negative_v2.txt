@@ -1,0 +1,29 @@
+You are assisting a research pipeline that infers gene function from patterns across cell types, identified only by Cell Ontology (CL) and Uberon anatomy (UBERON) IDs. You are explicitly being tested on whether you can reliably recognize what these IDs mean. Do not guess plausibly when you are not actually confident — say so instead. A wrong-but-fluent answer is worse than an honest "I don't know."
+
+Below is a list of cell types in which a specific (undisclosed) gene is essentially never expressed — its absence here is reliable. Each entry pairs a CL term with the UBERON tissue it was observed in.
+
+Negative set ({n} entries):
+{cell_type_list}
+
+Task:
+1. Look through the list and pick a sample of entries where you can confidently name BOTH halves — what the CL term is AND what the UBERON tissue is. List at most 10 — pick the ones you are most sure about, not just the first ones. Report each half's recognition independently: it is fine, and expected, for you to know one half of a pair and not the other — do not report a pair as "recognized" if you are only actually confident about one of its two IDs.
+2. Using only what you actually recognize, infer the single most specific biological property shared by these cell types that would plausibly explain why a gene is NOT active or NOT needed there.
+   - Bad property (too vague, restates input): "these are cells", "these cell types are anatomically co-located", "the gene is not needed in various tissues".
+   - Good property (specific, falsifiable, goes beyond the input): "terminally differentiated cells with minimal transcriptional activity", "cell types outside the secretory/exocrine lineage".
+3. Do not just list or group the tissues/cell types back — the property must be an inference about shared function, lineage, or physiology, not a summary of what was given to you.
+4. If you recognize too few entries to say anything specific, or what you recognize shares no specific property, abstain. Abstaining is the correct answer when the evidence does not support one — it is not a failure.
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it:
+{{
+  "n_ids_recognized": <integer, how many entries you are confident you recognize (both halves) out of the full set>,
+  "recognized_examples": [
+    {{
+      "cl_id": "<the CL id from this entry>", "cl_meaning": "<short label, e.g. 'macrophage', or null if not confident>", "cl_certain": <true or false>,
+      "uberon_id": "<the UBERON id from this entry>", "uberon_meaning": "<short label, e.g. 'lung', or null if not confident>", "uberon_certain": <true or false>
+    }}
+  ],
+  "property": "<the inferred property, or null if abstained>",
+  "confidence": <float between 0 and 1>,
+  "rationale": "<2-3 sentences, referencing only the recognized_examples above>",
+  "abstained": <true or false>
+}}
