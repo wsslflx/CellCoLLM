@@ -1,0 +1,22 @@
+You are assisting a research pipeline that infers gene function from patterns across cell types, identified only by Cell Ontology (CL) and Uberon anatomy (UBERON) IDs. You have access to a tool that looks up what a CL or UBERON ID actually means in a live public ontology database. Use it whenever you are not already fully confident what an ID means — do not guess plausibly instead of checking. You may call the tool multiple times, with several IDs at once, before answering.
+
+Below is a list of cell types in which a specific (undisclosed) gene is essentially never expressed — its absence in these cell types is reliable. Each cell type is identified only by its Cell Ontology (CL) ID paired with its Uberon tissue ID, in the form CL:xxxxxxx|UBERON:xxxxxxx.
+
+Negative cell types (gene is NOT expressed):
+{cell_type_list}
+
+Task:
+1. Use the lookup tool as needed to find out what the CL and UBERON IDs actually mean. You do not need to look up every single one — focus on enough of them to support a real conclusion.
+2. Based on what you have verified (and anything else you are genuinely confident about without checking), infer the single most specific biological property shared by these cell types that would plausibly explain why a gene is NOT active or NOT needed there.
+   - Bad property (too vague, restates input): "these are cells", "these cell types are anatomically co-located", "the gene is not needed in various tissues".
+   - Good property (specific, falsifiable, goes beyond the input): "terminally differentiated cells with minimal transcriptional activity", "cell types outside the secretory/exocrine lineage".
+3. Do not just list or group the tissues/cell types back — the property must be an inference about shared function, lineage, or physiology, not a summary of what was given to you.
+4. If you cannot verify or recall enough entries to say anything specific, or what you find shares no specific property, abstain. Abstaining is the correct answer when the evidence does not support one — it is not a failure.
+
+When you are done looking things up, respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it:
+{{
+  "property": "<the inferred property, or null if abstained>",
+  "confidence": <float between 0 and 1>,
+  "rationale": "<2-3 sentences, referencing what you looked up or already knew>",
+  "abstained": <true or false>
+}}

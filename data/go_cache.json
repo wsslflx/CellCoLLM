@@ -1,0 +1,552 @@
+{
+  "ENSG00000012048": {
+    "bp_terms": [
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0000724",
+        "term": "double-strand break repair via homologous recombination"
+      },
+      {
+        "evidence": "IEA",
+        "go_id": "GO:0006281",
+        "term": "DNA repair"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0006282",
+        "term": "regulation of DNA repair"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0006301",
+        "term": "DNA damage tolerance"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0006302",
+        "term": "double-strand break repair"
+      },
+      {
+        "evidence": "TAS",
+        "go_id": "GO:0006338",
+        "term": "chromatin remodeling"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0006357",
+        "term": "regulation of transcription by RNA polymerase II"
+      },
+      {
+        "evidence": "IEA",
+        "go_id": "GO:0006974",
+        "term": "DNA damage response"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0007059",
+        "term": "chromosome segregation"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0007095",
+        "term": "mitotic G2 DNA damage checkpoint signaling"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0008630",
+        "term": "intrinsic apoptotic signaling pathway in response to DNA damage"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0010212",
+        "term": "response to ionizing radiation"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0010575",
+        "term": "positive regulation of vascular endothelial growth factor production"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0010628",
+        "term": "positive regulation of gene expression"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0016567",
+        "term": "protein ubiquitination"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0030308",
+        "term": "negative regulation of cell growth"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0033147",
+        "term": "negative regulation of intracellular estrogen receptor signaling pathway"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0035825",
+        "term": "homologous recombination"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0044027",
+        "term": "negative regulation of gene expression via chromosomal CpG island methylation"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0044818",
+        "term": "mitotic G2/M transition checkpoint"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0045717",
+        "term": "negative regulation of fatty acid biosynthetic process"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0045739",
+        "term": "positive regulation of DNA repair"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0045766",
+        "term": "positive regulation of angiogenesis"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0045786",
+        "term": "negative regulation of cell cycle"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0045892",
+        "term": "negative regulation of DNA-templated transcription"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0045893",
+        "term": "positive regulation of DNA-templated transcription"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0045944",
+        "term": "positive regulation of transcription by RNA polymerase II"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0046600",
+        "term": "negative regulation of centriole replication"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0051726",
+        "term": "regulation of cell cycle"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0051865",
+        "term": "protein autoubiquitination"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0071356",
+        "term": "cellular response to tumor necrosis factor"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0071479",
+        "term": "cellular response to ionizing radiation"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0071681",
+        "term": "cellular response to indole-3-methanol"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0085020",
+        "term": "protein K6-linked ubiquitination"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0110025",
+        "term": "DNA strand resection involved in replication fork processing"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:1902042",
+        "term": "negative regulation of extrinsic apoptotic signaling pathway via death domain receptors"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:2000001",
+        "term": "regulation of DNA damage checkpoint"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:2000378",
+        "term": "negative regulation of reactive oxygen species metabolic process"
+      }
+    ]
+  },
+  "ENSG00000070526": {
+    "bp_terms": [
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0009101",
+        "term": "glycoprotein biosynthetic process"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0009312",
+        "term": "oligosaccharide biosynthetic process"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0048874",
+        "term": "host-mediated modulation of intestinal microbiota composition"
+      },
+      {
+        "evidence": "IEA",
+        "go_id": "GO:0051851",
+        "term": "host-mediated perturbation of symbiont process"
+      }
+    ]
+  },
+  "ENSG00000070540": {
+    "bp_terms": [
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0000045",
+        "term": "autophagosome assembly"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0000422",
+        "term": "autophagy of mitochondrion"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0000425",
+        "term": "pexophagy"
+      },
+      {
+        "evidence": "IEP",
+        "go_id": "GO:0006914",
+        "term": "autophagy"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0009267",
+        "term": "cellular response to starvation"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0016197",
+        "term": "endosomal transport"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0034497",
+        "term": "protein localization to phagophore assembly site"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0044804",
+        "term": "nucleophagy"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0061723",
+        "term": "glycophagy"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0140285",
+        "term": "endosome fission"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:2000786",
+        "term": "positive regulation of autophagosome assembly"
+      }
+    ]
+  },
+  "ENSG00000123130": {
+    "bp_terms": [
+      {
+        "evidence": "ISS",
+        "go_id": "GO:0001676",
+        "term": "long-chain fatty acid metabolic process"
+      },
+      {
+        "evidence": "IEA",
+        "go_id": "GO:0006631",
+        "term": "fatty acid metabolic process"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0006637",
+        "term": "acyl-CoA metabolic process"
+      },
+      {
+        "evidence": "ISS",
+        "go_id": "GO:0046459",
+        "term": "short-chain fatty acid metabolic process"
+      }
+    ]
+  },
+  "ENSG00000123131": {
+    "bp_terms": [
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0006979",
+        "term": "response to oxidative stress"
+      },
+      {
+        "evidence": "TAS",
+        "go_id": "GO:0007252",
+        "term": "I-kappaB phosphorylation"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0042744",
+        "term": "hydrogen peroxide catabolic process"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0045454",
+        "term": "cell redox homeostasis"
+      },
+      {
+        "evidence": "IEA",
+        "go_id": "GO:0098869",
+        "term": "cellular oxidant detoxification"
+      }
+    ]
+  },
+  "ENSG00000129696": {
+    "bp_terms": [
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0050821",
+        "term": "protein stabilization"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:2000003",
+        "term": "positive regulation of DNA damage checkpoint"
+      }
+    ]
+  },
+  "ENSG00000130770": {
+    "bp_terms": [
+      {
+        "evidence": "TAS",
+        "go_id": "GO:0001525",
+        "term": "angiogenesis"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0001937",
+        "term": "negative regulation of endothelial cell proliferation"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0002931",
+        "term": "response to ischemia"
+      },
+      {
+        "evidence": "TAS",
+        "go_id": "GO:0006091",
+        "term": "generation of precursor metabolites and energy"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0006783",
+        "term": "heme biosynthetic process"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0010667",
+        "term": "negative regulation of cardiac muscle cell apoptotic process"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0030218",
+        "term": "erythrocyte differentiation"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0045732",
+        "term": "positive regulation of protein catabolic process"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0051346",
+        "term": "negative regulation of hydrolase activity"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0051882",
+        "term": "mitochondrial depolarization"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:1903747",
+        "term": "regulation of protein localization to mitochondrion"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:1905091",
+        "term": "positive regulation of type 2 mitophagy"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:1905707",
+        "term": "negative regulation of mitochondrial ATP synthesis coupled proton transport"
+      }
+    ]
+  },
+  "ENSG00000130772": {
+    "bp_terms": [
+      {
+        "evidence": "IEA",
+        "go_id": "GO:0006357",
+        "term": "regulation of transcription by RNA polymerase II"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0032968",
+        "term": "positive regulation of transcription elongation by RNA polymerase II"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0051123",
+        "term": "RNA polymerase II preinitiation complex assembly"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0060261",
+        "term": "positive regulation of transcription initiation by RNA polymerase II"
+      }
+    ]
+  },
+  "ENSG00000132763": {
+    "bp_terms": [
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0006749",
+        "term": "glutathione metabolic process"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0009235",
+        "term": "cobalamin metabolic process"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0070988",
+        "term": "demethylation"
+      }
+    ]
+  },
+  "ENSG00000149554": {
+    "bp_terms": [
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0000077",
+        "term": "DNA damage checkpoint signaling"
+      },
+      {
+        "evidence": "TAS",
+        "go_id": "GO:0006260",
+        "term": "DNA replication"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0006281",
+        "term": "DNA repair"
+      },
+      {
+        "evidence": "IEA",
+        "go_id": "GO:0006338",
+        "term": "chromatin remodeling"
+      },
+      {
+        "evidence": "IMP",
+        "go_id": "GO:0006974",
+        "term": "DNA damage response"
+      },
+      {
+        "evidence": "IBA",
+        "go_id": "GO:0007095",
+        "term": "mitotic G2 DNA damage checkpoint signaling"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0010569",
+        "term": "regulation of double-strand break repair via homologous recombination"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0042770",
+        "term": "signal transduction in response to DNA damage"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0044818",
+        "term": "mitotic G2/M transition checkpoint"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0045787",
+        "term": "positive regulation of cell cycle"
+      },
+      {
+        "evidence": "IEA",
+        "go_id": "GO:0045814",
+        "term": "negative regulation of gene expression, epigenetic"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0045839",
+        "term": "negative regulation of mitotic nuclear division"
+      },
+      {
+        "evidence": "IDA",
+        "go_id": "GO:0046602",
+        "term": "regulation of mitotic centrosome separation"
+      },
+      {
+        "evidence": "TAS",
+        "go_id": "GO:0070317",
+        "term": "negative regulation of G0 to G1 transition"
+      },
+      {
+        "evidence": "IEP",
+        "go_id": "GO:0071260",
+        "term": "cellular response to mechanical stimulus"
+      },
+      {
+        "evidence": "NAS",
+        "go_id": "GO:0090399",
+        "term": "replicative senescence"
+      },
+      {
+        "evidence": "TAS",
+        "go_id": "GO:1901796",
+        "term": "regulation of signal transduction by p53 class mediator"
+      },
+      {
+        "evidence": "IEA",
+        "go_id": "GO:1901988",
+        "term": "negative regulation of cell cycle phase transition"
+      }
+    ]
+  }
+}

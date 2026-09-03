@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -33,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 import mlflow
 
 from core.data_loader import GeneExpressionDataset, parse_pair
-from core.llm_backend import compute_num_ctx, make_chat_llm, resolve_chat_model
+from core.llm_backend import DEFAULT_NUM_PREDICT, compute_num_ctx, make_chat_llm, resolve_chat_model
 from core.mlflow_utils import (
     RunContext,
     get_or_create_gene_parent_run,
@@ -58,6 +59,26 @@ PROMPT_VERSIONS = {
     },
 }
 REQUIRED_RESPONSE_KEYS = {"property", "confidence", "rationale", "abstained"}
+# Fraction of (num_ctx - num_predict) that counts as "saturated" — a prompt this close to
+# the edge of its available budget either barely fits or (more likely, if it's a large
+# gene set) was silently truncated by Ollama, which reports the truncated count either way.
+CONTEXT_UTILIZATION_OVERFLOW_THRESHOLD = 0.98
+
+
+def log_context_utilization(input_set: str, actual_prompt_tokens: int | None, num_ctx: int) -> None:
+    """Ground-truth overflow check from the model's own reported prompt_eval_count —
+    logged and printed for both successful and failed (parse-error) calls."""
+    if actual_prompt_tokens is None:
+        return
+    context_budget = num_ctx - DEFAULT_NUM_PREDICT
+    context_utilization = actual_prompt_tokens / context_budget
+    context_overflow_confirmed = context_utilization >= CONTEXT_UTILIZATION_OVERFLOW_THRESHOLD
+    mlflow.log_metric("context_utilization", context_utilization)
+    mlflow.set_tag("context_overflow_confirmed", context_overflow_confirmed)
+    if context_overflow_confirmed:
+        print(f"[{input_set}] CONFIRMED OVERFLOW: actual prompt used {actual_prompt_tokens}/{context_budget} "
+              f"of the available context ({context_utilization:.0%}) — this prompt was very likely truncated; "
+              f"treat this response as unreliable.")
 
 
 def build_grouped_list(cell_type_ids: list[str], lookup: OntologyLookup) -> tuple[str, int, list[str]]:
@@ -95,16 +116,48 @@ def build_grouped_list(cell_type_ids: list[str], lookup: OntologyLookup) -> tupl
     return "\n".join(lines), len(groups), unresolved_pairs
 
 
+_MARKER_TOKEN_RE = re.compile(r"\b[\w/]+-(?:positive|negative|high|low|bright|dim)\b", re.IGNORECASE)
+_BRACKET_TAG_RE = re.compile(r"\s?\[[A-Z]{2,6}\]")
+_EXAMPLES_RE = re.compile(r"^Examples?:", re.IGNORECASE)
+
+
+def _strip_definition_noise(definition: str) -> tuple[str, int]:
+    """
+    Remove marker/phenotype code lists (flow-cytometry detail, not shared
+    function/lineage/physiology), inline bracket cross-ref tags, and
+    "Examples: ..." trailers from an OBO definition. Sentence-level removal,
+    triggered by marker-token density (>=2 per sentence) rather than
+    enumerating lead-in phrases, so a single incidental marker mention (e.g.
+    "expresses the CD4 coreceptor") is correctly left alone. Returns
+    (cleaned_text, chars_removed); falls back to the original text if
+    stripping would leave nothing (e.g. every sentence was marker detail).
+    """
+    original_len = len(definition)
+    text = _BRACKET_TAG_RE.sub("", definition)
+    sentences = re.split(r"(?<=[.])\s+", text.strip())
+    kept = [
+        s for s in sentences
+        if len(_MARKER_TOKEN_RE.findall(s)) < 2 and not _EXAMPLES_RE.match(s.strip())
+    ]
+    cleaned = " ".join(kept).strip()
+    if not cleaned:
+        return definition, 0
+    return cleaned, original_len - len(cleaned)
+
+
 def _glossary_block(
     ontology: str, term_id: str, lookup: OntologyLookup, include_definition: bool, include_hierarchy: bool,
-    hierarchy_depth: int,
-) -> tuple[str, bool]:
-    """Format one glossary entry for a single unique CL or UBERON term; returns (block, unresolved)."""
+    hierarchy_depth: int, strip_marker_noise: bool,
+) -> tuple[str, bool, int]:
+    """Format one glossary entry for a single unique CL or UBERON term; returns (block, unresolved, chars_stripped)."""
     term = lookup.resolve_cl(term_id) if ontology == "cl" else lookup.resolve_uberon(term_id)
     label = term.label if term.resolved else f"(unresolved: {term_id})"
     lines = [f"{term_id} - {label}"]
+    chars_stripped = 0
     if include_definition:
         definition = term.definition if term.resolved and term.definition else "(no definition available)"
+        if strip_marker_noise and term.resolved and term.definition:
+            definition, chars_stripped = _strip_definition_noise(definition)
         lines.append(f"  Definition: {definition}")
     if include_hierarchy:
         ancestors = lookup.ancestors(ontology, term_id, hierarchy_depth) if term.resolved else []
@@ -113,12 +166,12 @@ def _glossary_block(
             lines.append(f"  Broader categories: {chain}")
         else:
             lines.append(f"  Broader categories: (none found within depth {hierarchy_depth})")
-    return "\n".join(lines), not term.resolved
+    return "\n".join(lines), not term.resolved, chars_stripped
 
 
 def build_glossary(
     cell_type_ids: list[str], lookup: OntologyLookup, include_definition: bool, include_hierarchy: bool,
-    hierarchy_depth: int,
+    hierarchy_depth: int, strip_marker_noise: bool,
 ) -> tuple[str, dict]:
     """
     One glossary block per *unique* CL/UBERON term referenced in cell_type_ids
@@ -133,16 +186,23 @@ def build_glossary(
         uberon_ids.add(uberon_id)
 
     n_unresolved = 0
+    chars_stripped_total = 0
     cl_blocks = []
     for term_id in sorted(cl_ids):
-        block, unresolved = _glossary_block("cl", term_id, lookup, include_definition, include_hierarchy, hierarchy_depth)
+        block, unresolved, chars_stripped = _glossary_block(
+            "cl", term_id, lookup, include_definition, include_hierarchy, hierarchy_depth, strip_marker_noise,
+        )
         cl_blocks.append(block)
         n_unresolved += unresolved
+        chars_stripped_total += chars_stripped
     uberon_blocks = []
     for term_id in sorted(uberon_ids):
-        block, unresolved = _glossary_block("uberon", term_id, lookup, include_definition, include_hierarchy, hierarchy_depth)
+        block, unresolved, chars_stripped = _glossary_block(
+            "uberon", term_id, lookup, include_definition, include_hierarchy, hierarchy_depth, strip_marker_noise,
+        )
         uberon_blocks.append(block)
         n_unresolved += unresolved
+        chars_stripped_total += chars_stripped
 
     glossary = (
         "Cell types (CL):\n" + "\n\n".join(cl_blocks) + "\n\nTissues (UBERON):\n" + "\n\n".join(uberon_blocks)
@@ -152,12 +212,15 @@ def build_glossary(
         "n_unique_uberon_terms": len(uberon_ids),
         "n_glossary_unresolved": n_unresolved,
     }
+    if strip_marker_noise:
+        counts["definition_chars_stripped"] = chars_stripped_total
     return glossary, counts
 
 
 def build_prompt(
     prompt_file_stem: str, cell_type_ids: list[str], lookup: OntologyLookup, prompt_mode: str,
     include_definition: bool = False, include_hierarchy: bool = False, hierarchy_depth: int = 0,
+    strip_marker_noise: bool = False,
 ) -> tuple[str, list[str], int, dict, str | None]:
     template = (PROMPTS_DIR / f"{prompt_file_stem}.txt").read_text()
     grouped_list, n_groups, unresolved_pairs = build_grouped_list(cell_type_ids, lookup)
@@ -166,7 +229,7 @@ def build_prompt(
     glossary_text: str | None = None
     if prompt_mode == "glossary":
         glossary_text, glossary_counts = build_glossary(
-            cell_type_ids, lookup, include_definition, include_hierarchy, hierarchy_depth,
+            cell_type_ids, lookup, include_definition, include_hierarchy, hierarchy_depth, strip_marker_noise,
         )
         prompt = template.format(
             glossary=glossary_text, cell_type_list=grouped_list, n=len(cell_type_ids), n_tissues=n_groups,
@@ -180,6 +243,7 @@ def run_direction(
     ds: GeneExpressionDataset, lookup: OntologyLookup, gene_id: str, gene_symbol: str, species: str,
     model: str, temperature: float, seed: int, input_set: str, parent_run_id: str,
     prompt_version: str, include_definition: bool, include_hierarchy: bool, hierarchy_depth: int,
+    strip_marker_noise: bool,
 ) -> None:
     cell_type_ids = (
         ds.positive_cell_types(gene_id) if input_set == "positive" else ds.negative_cell_types(gene_id)
@@ -192,6 +256,7 @@ def run_direction(
     effective_include_definition = include_definition if prompt_mode == "glossary" else False
     effective_include_hierarchy = include_hierarchy if prompt_mode == "glossary" else False
     effective_hierarchy_depth = hierarchy_depth if prompt_mode == "glossary" else 0
+    effective_strip_marker_noise = strip_marker_noise if prompt_mode == "glossary" else False
 
     ctx = RunContext(
         approach=APPROACH,
@@ -212,6 +277,7 @@ def run_direction(
             "include_definition": effective_include_definition,
             "include_hierarchy": effective_include_hierarchy,
             "hierarchy_depth": effective_hierarchy_depth,
+            "strip_marker_noise": effective_strip_marker_noise,
             "list_group_by": "uberon",
         },
     )
@@ -229,6 +295,7 @@ def run_direction(
         prompt, unresolved_pairs, n_groups, glossary_counts, glossary_text = build_prompt(
             prompt_file_stem, cell_type_ids, lookup, prompt_mode,
             effective_include_definition, effective_include_hierarchy, effective_hierarchy_depth,
+            effective_strip_marker_noise,
         )
         mlflow.log_metric("n_unresolved", len(unresolved_pairs))
         mlflow.log_metric("n_list_groups", n_groups)
@@ -246,18 +313,21 @@ def run_direction(
 
         log_text_artifact(prompt, "prompt.txt")
 
-        # Rough chars/4 estimate (no tokenizer dependency) — used to size num_ctx
-        # dynamically (below) and to flag prompts that overflow even the model's
-        # real max; calibrated per-run against the actual prompt_eval_count once
-        # the LLM responds (see actual_prompt_tokens below).
+        # Rough chars/4 estimate (no tokenizer dependency) — an early, pre-call heads-up
+        # only; calibration against the model's real tokenizer showed this is unreliable
+        # in both directions, so it no longer drives num_ctx sizing (see compute_num_ctx)
+        # or counts as a confirmed overflow — that comes from the post-call ground-truth
+        # check below, once actual_prompt_tokens (prompt_eval_count) is known.
         estimated_prompt_tokens = len(prompt) // 4
-        num_ctx, context_overflow_risk = compute_num_ctx(model, estimated_prompt_tokens)
+        num_ctx = compute_num_ctx(model)
         mlflow.log_metric("estimated_prompt_tokens", estimated_prompt_tokens)
         mlflow.log_param("num_ctx", num_ctx)
-        mlflow.set_tag("context_overflow_risk", context_overflow_risk)
-        if context_overflow_risk:
-            print(f"[{input_set}] WARNING: estimated prompt size ~{estimated_prompt_tokens} tokens "
-                  f"still exceeds this model's max context (num_ctx={num_ctx}) even after widening the window.")
+        estimated_overflow_risk = estimated_prompt_tokens + DEFAULT_NUM_PREDICT > num_ctx
+        mlflow.set_tag("context_overflow_risk_estimated", estimated_overflow_risk)
+        if estimated_overflow_risk:
+            print(f"[{input_set}] Heads-up: estimated prompt size ~{estimated_prompt_tokens} tokens "
+                  f"may exceed num_ctx={num_ctx} — this is an unreliable pre-call guess, "
+                  f"the confirmed check runs after the LLM responds.")
 
         print(f"[{input_set}] Calling {model} ({prompt_version}, {len(unresolved_pairs)} unresolved of {len(cell_type_ids)})...")
 
@@ -267,6 +337,7 @@ def run_direction(
                 llm, prompt, REQUIRED_RESPONSE_KEYS,
             )
         except RuntimeError as exc:
+            log_context_utilization(input_set, getattr(exc, "response_metadata", {}).get("prompt_eval_count"), num_ctx)
             log_text_artifact(str(exc), "parse_error.txt")
             mlflow.set_tag("status", "FAILED_PARSE")
             print(f"[{input_set}] {exc}")
@@ -275,6 +346,7 @@ def run_direction(
         actual_prompt_tokens = response_metadata.get("prompt_eval_count")
         if actual_prompt_tokens is not None:
             mlflow.log_metric("actual_prompt_tokens", actual_prompt_tokens)
+        log_context_utilization(input_set, actual_prompt_tokens, num_ctx)
 
         log_text_artifact(raw_text, "response_raw.txt")
         log_json_artifact(parsed, "response_parsed.json")
@@ -310,12 +382,15 @@ def main() -> None:
                          help="v2 only: include each glossary term's is_a ancestor chain")
     parser.add_argument("--hierarchy-depth", type=int, default=2,
                          help="v2 only: is_a traversal depth for the ancestor chain (default 2)")
+    parser.add_argument("--strip-marker-noise", action=argparse.BooleanOptionalAction, default=True,
+                         help="v2 only: strip marker/phenotype code lists and cross-ref tags from definitions")
     args = parser.parse_args()
 
     if args.prompt_version != "v2" and (
         not args.include_definition or not args.include_hierarchy or args.hierarchy_depth != 2
+        or not args.strip_marker_noise
     ):
-        print(f"Note: --include-definition/--include-hierarchy/--hierarchy-depth are v2-only "
+        print(f"Note: --include-definition/--include-hierarchy/--hierarchy-depth/--strip-marker-noise are v2-only "
               f"and are ignored for --prompt-version {args.prompt_version}.")
 
     gene_id = args.gene
@@ -344,7 +419,7 @@ def main() -> None:
             ds, lookup, gene_id, gene_symbol, args.species, model, args.temperature, args.seed,
             input_set=direction, parent_run_id=parent_run_id, prompt_version=args.prompt_version,
             include_definition=args.include_definition, include_hierarchy=args.include_hierarchy,
-            hierarchy_depth=args.hierarchy_depth,
+            hierarchy_depth=args.hierarchy_depth, strip_marker_noise=args.strip_marker_noise,
         )
 
 

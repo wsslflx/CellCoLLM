@@ -35,9 +35,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
 import mlflow
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import tool
 
 from core.data_loader import GeneExpressionDataset
-from core.llm_backend import make_chat_llm, resolve_chat_model
+from core.llm_backend import compute_num_ctx, make_chat_llm, resolve_chat_model
 from core.mlflow_utils import (
     RunContext,
     get_or_create_gene_parent_run,
@@ -46,12 +48,16 @@ from core.mlflow_utils import (
     tracked_run,
     verify_blinding,
 )
+from core.ontology_web_lookup import fetch_term_live
+from core.structured_llm import parse_structured_response
 
 APPROACH = "naive"
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 # v1: free-text response, no schema. v2: forced structured JSON (property/confidence/
-# rationale/abstained + a bounded ID-recognition audit). Kept both so a supervisor demo
-# can show the before/after of adding structure, not just the latest version.
+# rationale/abstained + a bounded ID-recognition audit). v3: agentic — the model can
+# call a live ontology-lookup tool instead of recalling/guessing (exploratory test,
+# see PROMPT_VERSIONS["v3"] below). Kept all three so a supervisor demo can show the
+# before/after of adding structure and then tool use, not just the latest version.
 PROMPT_VERSIONS = {
     "v1": {
         "structured": False,
@@ -61,9 +67,21 @@ PROMPT_VERSIONS = {
         "structured": True,
         "files": {"positive": "naive_id_only_positive_v2", "negative": "naive_id_only_negative_v2"},
     },
+    "v3": {
+        "agentic": True,
+        "files": {"positive": "naive_agentic_positive_v3", "negative": "naive_agentic_negative_v3"},
+    },
 }
 REQUIRED_RESPONSE_KEYS = {"n_ids_recognized", "recognized_examples", "property", "confidence", "rationale", "abstained"}
 MAX_PARSE_ATTEMPTS = 3
+
+# v3 (agentic) only. Bounds total live lookups to <= these multiplied together per
+# direction-run, regardless of input-list size — a real, logged operational limit
+# (politeness to a public free API, bounded latency), not a silent cap.
+DEFAULT_MAX_TOOL_CALL_ROUNDS = 5
+DEFAULT_MAX_TOOL_IDS_PER_CALL = 20
+AGENTIC_REQUIRED_RESPONSE_KEYS = {"property", "confidence", "rationale", "abstained"}
+AGENTIC_MAX_FINALIZE_ATTEMPTS = 3
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
@@ -103,6 +121,170 @@ def call_llm_with_retry(llm, prompt: str) -> tuple[dict, str, float, int]:
             last_error = exc
             print(f"  parse attempt {attempt}/{MAX_PARSE_ATTEMPTS} failed: {exc}")
     raise RuntimeError(f"Failed to get parseable JSON after {MAX_PARSE_ATTEMPTS} attempts: {last_error}") from last_error
+
+
+def make_lookup_tool(max_ids_per_call: int, call_log: list) -> "callable":
+    """
+    Build a fresh @tool-wrapped lookup function for one run, closing over a
+    per-run call_log list (appended to on every invocation, for the
+    tool_calls.json artifact) and the configured per-call ID cap.
+    """
+    @tool
+    def lookup_ontology_terms(ids: list[str]) -> dict:
+        """Look up the real meaning of Cell Ontology (CL:...) or Uberon (UBERON:...)
+        IDs via a live public ontology database. Pass a list of IDs; if you pass too
+        many at once, only the first several will actually be looked up."""
+        processed = ids[:max_ids_per_call]
+        dropped = len(ids) - len(processed)
+        results = {}
+        for term_id in processed:
+            prefix = term_id.split(":", 1)[0].upper()
+            ontology = {"CL": "cl", "UBERON": "uberon"}.get(prefix)
+            if ontology is None:
+                results[term_id] = {"id": term_id, "label": None, "definition": None, "found": False}
+                continue
+            results[term_id] = fetch_term_live(ontology, term_id)
+        call_log.append({"requested": ids, "processed": processed, "dropped_count": dropped, "results": results})
+        return results
+
+    return lookup_ontology_terms
+
+
+def run_agentic_direction(
+    ds: GeneExpressionDataset, gene_id: str, gene_symbol: str, species: str,
+    model: str, temperature: float, seed: int, input_set: str, parent_run_id: str,
+    prompt_version: str, max_tool_call_rounds: int, max_tool_ids_per_call: int,
+) -> None:
+    """
+    v3 (agentic) only — exploratory test of tool-mediated ID lookup, see
+    PIPELINE_REQUIREMENTS.md discussion. Structurally separate from
+    run_direction() (v1/v2) so those stay byte-for-byte untouched.
+    """
+    cell_type_ids = (
+        ds.positive_cell_types(gene_id) if input_set == "positive" else ds.negative_cell_types(gene_id)
+    )
+    version_cfg = PROMPT_VERSIONS[prompt_version]
+    prompt_file_stem = version_cfg["files"][input_set]
+
+    ctx = RunContext(
+        approach=APPROACH,
+        approach_version=prompt_version,
+        gene_id=gene_id,
+        gene_symbol=gene_symbol,
+        species=species,
+        model=model,
+        prompt_mode="agentic_lookup",
+        input_set=input_set,
+        temperature=temperature,
+        seed=seed,
+        dataset_hash=ds.dataset_hash,
+        prompt_version=prompt_file_stem,
+        extra_params={
+            "tool_source": "ols4_live",
+            "max_tool_call_rounds": max_tool_call_rounds,
+            "max_tool_ids_per_call": max_tool_ids_per_call,
+        },
+        extra_tags={"reproducible_inputs": False},
+    )
+
+    with tracked_run(ctx, parent_run_id=parent_run_id) as run:
+        print(f"\n[{input_set}] MLflow run: {run.info.run_id} (parent: {parent_run_id})")
+        mlflow.log_metric("n_cell_types", len(cell_type_ids))
+        log_json_artifact(cell_type_ids, f"{input_set}_cell_types.json")
+
+        if not cell_type_ids:
+            print(f"[{input_set}] Empty set for this gene — aborting before the LLM call.")
+            mlflow.set_tag("status", "EARLY_EXIT_EMPTY_SET")
+            return
+
+        prompt = build_prompt(prompt_file_stem, cell_type_ids)
+        forbidden_terms = [gene_symbol] if gene_symbol != gene_id else []
+        blinding_ok, hits = verify_blinding(prompt, forbidden_terms=forbidden_terms)
+        mlflow.set_tag("blinding_verified", blinding_ok)
+        if not blinding_ok:
+            mlflow.set_tag("status", "FAILED_BLINDING")
+            raise SystemExit(f"[{input_set}] Blinding check failed — prompt contains: {hits}")
+
+        log_text_artifact(prompt, "prompt.txt")
+        print(f"[{input_set}] Calling {model} ({prompt_version}, agentic, "
+              f"up to {max_tool_call_rounds} tool-call rounds)...")
+
+        num_ctx = compute_num_ctx(model)
+        call_log: list = []
+        lookup_tool = make_lookup_tool(max_tool_ids_per_call, call_log)
+        llm_with_tools = make_chat_llm(model=model, temperature=temperature, seed=seed, num_ctx=num_ctx).bind_tools(
+            [lookup_tool]
+        )
+
+        messages: list = [("user", prompt)]
+        rounds_with_tool_calls = 0
+        t0 = time.time()
+        for round_i in range(max_tool_call_rounds):
+            response = llm_with_tools.invoke(messages)
+            messages.append(response)
+            tool_calls = getattr(response, "tool_calls", None) or []
+            if not tool_calls:
+                break
+            rounds_with_tool_calls += 1
+            for call in tool_calls:
+                result = lookup_tool.invoke(call["args"])
+                result_text = json.dumps(result)
+                result_ok, result_hits = verify_blinding(result_text, forbidden_terms=forbidden_terms)
+                if not result_ok:
+                    mlflow.set_tag("status", "FAILED_BLINDING")
+                    raise SystemExit(f"[{input_set}] Blinding check failed on a tool result — contains: {result_hits}")
+                messages.append(ToolMessage(content=result_text, tool_call_id=call["id"]))
+        else:
+            print(f"[{input_set}] Reached max_tool_call_rounds ({max_tool_call_rounds}) — forcing finalization.")
+        tool_phase_elapsed = time.time() - t0
+
+        n_tool_calls_total = len(call_log)
+        n_ids_looked_up_total = sum(len(c["processed"]) for c in call_log)
+        n_ids_found = sum(1 for c in call_log for r in c["results"].values() if r["found"])
+        log_json_artifact(call_log, "tool_calls.json")
+        mlflow.log_metrics({
+            "n_tool_call_rounds": rounds_with_tool_calls,
+            "n_tool_calls_total": n_tool_calls_total,
+            "n_ids_looked_up_total": n_ids_looked_up_total,
+            "n_ids_found": n_ids_found,
+        })
+        print(f"[{input_set}] Tool phase done: {n_tool_calls_total} call(s) across {rounds_with_tool_calls} round(s), "
+              f"{n_ids_found}/{n_ids_looked_up_total} ids found ({tool_phase_elapsed:.1f}s).")
+
+        finalize_instruction = (
+            "You are done looking things up (or have decided you don't need to). "
+            "Respond now with exactly one JSON object as instructed above, and nothing else."
+        )
+        messages.append(("user", finalize_instruction))
+        llm_json = make_chat_llm(model=model, temperature=temperature, seed=seed, format="json", num_ctx=num_ctx)
+
+        parsed, raw_text, last_error = None, "", None
+        finalize_t0 = time.time()
+        for attempt in range(1, AGENTIC_MAX_FINALIZE_ATTEMPTS + 1):
+            response = llm_json.invoke(messages)
+            raw_text = response.content if hasattr(response, "content") else str(response)
+            try:
+                parsed = parse_structured_response(raw_text, AGENTIC_REQUIRED_RESPONSE_KEYS)
+                break
+            except (ValueError, json.JSONDecodeError) as exc:
+                last_error = exc
+                print(f"  finalize attempt {attempt}/{AGENTIC_MAX_FINALIZE_ATTEMPTS} failed: {exc}")
+                messages.append(response)
+        finalize_elapsed = time.time() - finalize_t0
+        mlflow.log_metric("latency_s", tool_phase_elapsed + finalize_elapsed)
+
+        if parsed is None:
+            log_text_artifact(str(last_error), "parse_error.txt")
+            mlflow.set_tag("status", "FAILED_PARSE")
+            print(f"[{input_set}] Failed to get parseable JSON after {AGENTIC_MAX_FINALIZE_ATTEMPTS} attempts: {last_error}")
+            return
+
+        log_text_artifact(raw_text, "response_raw.txt")
+        log_json_artifact(parsed, "response_parsed.json")
+        mlflow.log_metric("confidence", parsed["confidence"])
+        mlflow.set_tags({"status": "COMPLETED", "abstained": bool(parsed["abstained"])})
+        print(f"--- [{input_set}] Response ---")
+        print(json.dumps(parsed, indent=2))
 
 
 def run_direction(
@@ -203,6 +385,10 @@ def main() -> None:
     parser.add_argument("--dataset", default=None, help="Path to the binarised expression tsv (default: repo root)")
     parser.add_argument("--set", dest="input_set", choices=["positive", "negative", "both"], default="both")
     parser.add_argument("--prompt-version", choices=list(PROMPT_VERSIONS), default="v2")
+    parser.add_argument("--max-tool-call-rounds", type=int, default=DEFAULT_MAX_TOOL_CALL_ROUNDS,
+                         help="v3 (agentic) only: max agent-loop rounds before forcing a final answer")
+    parser.add_argument("--max-tool-ids-per-call", type=int, default=DEFAULT_MAX_TOOL_IDS_PER_CALL,
+                         help="v3 (agentic) only: max IDs the lookup tool processes from one call")
     args = parser.parse_args()
 
     gene_id = args.gene
@@ -223,11 +409,19 @@ def main() -> None:
     )
 
     directions = ["positive", "negative"] if args.input_set == "both" else [args.input_set]
+    is_agentic = PROMPT_VERSIONS[args.prompt_version].get("agentic", False)
     for direction in directions:
-        run_direction(
-            ds, gene_id, gene_symbol, args.species, model, args.temperature, args.seed,
-            input_set=direction, parent_run_id=parent_run_id, prompt_version=args.prompt_version,
-        )
+        if is_agentic:
+            run_agentic_direction(
+                ds, gene_id, gene_symbol, args.species, model, args.temperature, args.seed,
+                input_set=direction, parent_run_id=parent_run_id, prompt_version=args.prompt_version,
+                max_tool_call_rounds=args.max_tool_call_rounds, max_tool_ids_per_call=args.max_tool_ids_per_call,
+            )
+        else:
+            run_direction(
+                ds, gene_id, gene_symbol, args.species, model, args.temperature, args.seed,
+                input_set=direction, parent_run_id=parent_run_id, prompt_version=args.prompt_version,
+            )
 
 
 if __name__ == "__main__":

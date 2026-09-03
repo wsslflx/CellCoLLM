@@ -22,6 +22,16 @@ def parse_pair(pair: str) -> tuple[str, str]:
     return cl_id, uberon_id
 
 
+def read_gene_ids(path: str | Path = DEFAULT_DATASET_PATH) -> list[str]:
+    """Just the gene ID column headers, without parsing the full ~88MB dataset —
+    for callers (e.g. the GO-match validation layer's distractor sampling) that
+    only need the gene universe, not any expression values."""
+    path = Path(path)
+    with open(path) as f:
+        header = f.readline().rstrip("\n")
+    return header.split("\t")[1:]  # first column is the "pair" row-key header, not a gene
+
+
 def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as f:

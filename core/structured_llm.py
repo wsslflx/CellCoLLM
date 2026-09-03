@@ -38,16 +38,20 @@ def call_llm_with_retry(
 ) -> tuple[dict, str, float, int, dict]:
     """Call the LLM, retrying on malformed/incomplete JSON up to max_attempts."""
     last_error = None
+    last_response_metadata: dict = {}
     for attempt in range(1, max_attempts + 1):
         t0 = time.time()
         response = llm.invoke([("user", prompt)])
         elapsed = time.time() - t0
         raw_text = response.content if hasattr(response, "content") else str(response)
         response_metadata = getattr(response, "response_metadata", {}) or {}
+        last_response_metadata = response_metadata
         try:
             parsed = parse_structured_response(raw_text, required_keys)
             return parsed, raw_text, elapsed, attempt - 1, response_metadata
         except (ValueError, json.JSONDecodeError) as exc:
             last_error = exc
             print(f"  parse attempt {attempt}/{max_attempts} failed: {exc}")
-    raise RuntimeError(f"Failed to get parseable JSON after {max_attempts} attempts: {last_error}") from last_error
+    exc = RuntimeError(f"Failed to get parseable JSON after {max_attempts} attempts: {last_error}")
+    exc.response_metadata = last_response_metadata
+    raise exc from last_error

@@ -83,20 +83,16 @@ def get_model_max_context(model: str) -> int:
     return max_context
 
 
-def compute_num_ctx(
-    model: str, estimated_prompt_tokens: int, num_predict: int = DEFAULT_NUM_PREDICT, margin: int = 512,
-) -> tuple[int, bool]:
+def compute_num_ctx(model: str) -> int:
     """
-    Size num_ctx to fit `estimated_prompt_tokens` + generation headroom, capped at the
-    model's real max context. Never goes below DEFAULT_NUM_CTX (today's known-working
-    default) — this only ever raises the window for larger prompts, never shrinks it.
-    Returns (num_ctx, overflow_risk) — overflow_risk is True when even the model's own
-    max isn't enough for the desired size.
+    Always size num_ctx to the model's real max context. A pre-call chars/4
+    estimate was tried for finer-grained sizing but proved unreliable in both
+    directions when calibrated against the model's actual prompt_eval_count
+    (see PIPELINE_REQUIREMENTS.md discussion) — since every measured case
+    already fits comfortably under the real max, sizing to it unconditionally
+    is a no-risk simplification, not a new experimental variable.
     """
-    model_max = get_model_max_context(model)
-    desired = estimated_prompt_tokens + num_predict + margin
-    num_ctx = min(model_max, max(desired, DEFAULT_NUM_CTX))
-    return num_ctx, desired > model_max
+    return get_model_max_context(model)
 
 
 def make_chat_llm(model: str | None, temperature: float, **kwargs: Any):

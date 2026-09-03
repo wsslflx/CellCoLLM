@@ -1,0 +1,21 @@
+You are validating a biological hypothesis against a list of known biological process terms. You are NOT told what gene either of these relates to — do not guess or assume one. Judge purely on whether the stated property's meaning overlaps with each term's meaning.
+
+Property (a claimed shared biological property of a set of cell types):
+"{property_text}"
+
+Below is a list of biological process terms, in no particular order. For each one, decide whether the property above plausibly accounts for, overlaps with, or is closely related to that specific process — or not.
+
+Terms:
+{term_list}
+
+For each index, respond with one of:
+- "match" — the property clearly relates to or would plausibly explain this biological process.
+- "partial" — there is some plausible connection, but it is indirect, partial, or uncertain.
+- "no_match" — no meaningful connection between the property and this process.
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it, one entry per index shown above:
+{{
+  "judgments": [
+    {{"index": <int>, "verdict": "match" | "partial" | "no_match"}}
+  ]
+}}
