@@ -1,0 +1,22 @@
+You are assisting a research pipeline that infers the biological context of a gene from where it is expressed across cell types and tissues.
+
+A statistical test (Fisher's exact test, Benjamini-Hochberg corrected) has already compared the cell types and tissues where an undisclosed gene IS reliably expressed against those where it is NOT expressed. You are shown only the features that differ significantly, each with its official Cell Ontology / Uberon definition. The counts are "observed in the expressing set vs observed in the non-expressing set"; the odds ratio is above 1 for enrichment and below 1 for depletion.
+
+{enriched_block}
+
+{depleted_block}
+
+Task:
+1. Infer the single most specific biological property shared by the cell types and tissues where this gene is expressed. Reason about what the enriched features have in common biologically — and about what their absence from the depleted features implies.
+   - Bad property (restates the list or the statistics): "cells that are enriched for endocrine gland and lymphoid cells", "the gene is expressed in the significant features above".
+   - Good property (a biological inference that goes beyond the input): "tissue-resident innate effector cells maintaining barrier surfaces", "hormone-secreting cells of the neuroendocrine lineage".
+2. Use the supplied definitions to work out what these cell types and tissues actually do. The statistics tell you *which* features differ; your job is to say *why* they would differ for one gene.
+3. If the enriched features share no coherent biological property — for example if they span unrelated systems with nothing meaningful in common — say so and abstain. Abstaining is the correct answer when the evidence does not support one; it is not a failure.
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it:
+{{
+  "property": "<the inferred property, or null if abstained>",
+  "confidence": <float between 0 and 1>,
+  "rationale": "<2-3 sentences explaining the biological reasoning>",
+  "abstained": <true or false>
+}}

@@ -3,4 +3,4 @@ You are given a list of cell types in which a certain gene is essentially never 
 Negative cell types (gene is NOT expressed):
 {cell_type_list}
 
-Based only on these identifiers, what do these cell types have in common? Propose the most specific biological property you can infer that might explain why this gene is not needed or not active in these cell types. If you do not recognise enough of these identifiers to say anything specific, say so plainly instead of guessing.
+Based only on these identifiers, reason by exclusion: given that the gene is absent from these cell types, predict what the cell types where it IS expressed would most likely have in common. Work out what these absent cell types share, then infer what property would be characteristic of the complementary group instead. State your answer as a property of the expressing (positive) cell types, not of the absent ones. If you do not recognise enough of these identifiers to say anything specific, say so plainly instead of guessing.

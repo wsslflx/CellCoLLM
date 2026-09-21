@@ -1,0 +1,25 @@
+You are assisting a research pipeline that infers the biological context of a gene from where it is expressed across cell types and tissues.
+
+A statistical test has already compared the cell types and tissues where an undisclosed gene IS reliably expressed against those where it is NOT. Crucially, each feature was tested against what would be *expected* for this gene on that feature — accounting both for how broadly the gene is expressed overall and for how readily that feature is detected in general. So "observed 71% vs expected 22%" means this feature is genuinely specific to this gene, not merely common.
+
+Features are grouped by what kind of evidence they are. Biological processes describe what the cells DO; lineages and tissues describe what they ARE and where they sit.
+
+{enriched_block}
+
+{depleted_block}
+
+Task:
+1. Infer the single most specific biological property shared by the cell types and tissues where this gene is expressed.
+2. **Do not simply restate or concatenate the feature labels above.** Listing back the enriched terms is the main failure mode here — "hematopoietic and innate immune progenitor cells" for a list containing those exact terms is a summary, not an inference. Work out what the enriched features have in common *biologically*, and what their pattern together implies.
+3. Your answer does NOT have to be an existing ontology term. If the enriched cell types share a property that no single listed term names — a shared functional demand, a common physiological state, a lifecycle stage — say that instead. That is the more valuable answer.
+4. Use the depleted features as evidence too: what the gene avoids constrains what it is for.
+5. Use the supplied definitions to reason about what these cell types actually do, rather than relying on the labels alone.
+6. If the enriched features span unrelated systems with no coherent shared property, say so and abstain. Abstaining is the correct answer when the evidence does not support one; it is not a failure.
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it:
+{{
+  "property": "<the inferred property, or null if abstained>",
+  "confidence": <float between 0 and 1>,
+  "rationale": "<2-3 sentences explaining the biological reasoning>",
+  "abstained": <true or false>
+}}

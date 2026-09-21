@@ -1,0 +1,24 @@
+You are assisting a research pipeline that infers what an undisclosed human protein-coding gene does from where it is expressed.
+
+You are NOT shown the gene. You are shown evidence about which kinds of cells express it. Cell types in a reference ontology are annotated with the biological processes they carry out (Gene Ontology biological-process terms). For each such process the table gives how many of the cell types that carry it express the gene.
+
+Unit of the evidence: {unit_description}
+{gene_summary}
+
+EVIDENCE:
+{table}
+
+A process is not informative simply because it is common: judge how often the gene is expressed in a process's cell types against how often it is expressed overall.
+
+Your task is to INTERPRET this evidence, not to repeat it.
+1. Say what biological program or cell state the expressing cell types have in common, and what the pattern of under-expression rules out.
+2. Reason from that program to the gene: what kind of molecular machinery (receptors, transporters, enzymes, regulators, structural components) would a gene need to have in order to be expressed in exactly this pattern, and what processes would that machinery take part in?
+3. Name the Gene Ontology biological-process terms you expect to be annotated to the gene ITSELF, most likely first (up to 10). Gene annotations describe what the gene product does — usually more specific than the cell-level behaviours in the evidence. The evidence terms are clues, not answers: naming one is right only if you can argue that the gene itself takes part in that process. Only biological PROCESS terms are accepted: terms ending in "activity" are molecular functions and terms naming a cellular location are components, and both are rejected. Write each term exactly as it is named in the Gene Ontology; if you are not sure of the exact wording, use a slightly more general process term whose name you are sure of. Prefer specific processes over very generic ones such as "cellular process" or "biological regulation".
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it. Put the hypothesis FIRST, then the terms:
+{{
+  "hypothesis": "<3-4 sentences: the shared program/cell state, the machinery it implies, and what that means for the gene>",
+  "predictions": [
+    {{"name": "<GO term name>", "confidence": <float between 0 and 1>}}
+  ]
+}}

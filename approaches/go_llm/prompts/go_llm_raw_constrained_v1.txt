@@ -1,0 +1,24 @@
+You are assisting a research pipeline that infers what an undisclosed human protein-coding gene does from where it is expressed.
+
+You are NOT shown the gene. You are shown evidence about which kinds of cells express it. Cell types in a reference ontology are annotated with the biological processes they carry out (Gene Ontology biological-process terms). For each such process the table gives how many of the cell types that carry it express the gene.
+
+Unit of the evidence: {unit_description}
+{gene_summary}
+
+EVIDENCE:
+{table}
+
+A process is not informative simply because it is common: judge how often the gene is expressed in a process's cell types against how often it is expressed overall.
+
+Your task is to INTERPRET this evidence, not to repeat it.
+1. Say what biological program or cell state the expressing cell types have in common, and what the pattern of under-expression rules out.
+2. Reason from that program to the gene: what kind of molecular machinery (receptors, transporters, enzymes, regulators, structural components) would a gene need to have in order to be expressed in exactly this pattern, and what processes would that machinery take part in?
+3. From the evidence terms above, choose up to 10 that best cover what the gene ITSELF is likely to do given your interpretation, most likely first. Gene annotations describe what the gene product does — usually more specific than the cell-level behaviours listed — so pick the terms whose meaning is closest to the function you inferred, not simply the ones with the largest numbers. Only terms from the evidence are accepted — a GO id that does not appear in the evidence is rejected, so if no evidence term fits well, pick the closest ones anyway. Copy each GO id exactly as written.
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it. Put the hypothesis FIRST, then the terms:
+{{
+  "hypothesis": "<3-4 sentences: the shared program/cell state, the machinery it implies, and what that means for the gene>",
+  "predictions": [
+    {{"go_id": "GO:0000000", "confidence": <float between 0 and 1>}}
+  ]
+}}

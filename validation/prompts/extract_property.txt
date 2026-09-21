@@ -1,0 +1,15 @@
+Below is an unstructured free-text answer produced by another model. Somewhere in it, the model proposes a shared biological property of a set of cell types. Your only job is to extract that proposed property as a single concise statement.
+
+Extract only the substantive biological claim. Ignore any preamble explaining identifier formats or notation, any description of its own reasoning process, any caveats, and any restatement of the task.
+
+If the text contains no substantive biological claim at all (for example, it only explains notation or declines to answer), return null for the property.
+
+Free-text answer:
+---
+{response_text}
+---
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it:
+{{
+  "property": "<the single extracted property statement, or null if there is none>"
+}}

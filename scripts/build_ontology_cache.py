@@ -51,6 +51,14 @@ SOURCES = {
 # value here. Kept well above today's runtime default (2) for headroom.
 CACHE_HIERARCHY_DEPTH = 4
 
+# CL links cell types to GO biological processes through these relations. obonet keys
+# edges by the relation's name where it has one, so both the RO id and the readable
+# form are accepted (which appears depends on the OBO file's typedef stanzas).
+CAPABLE_OF_RELATIONS = {"RO:0002215", "RO:0002216", "capable_of", "capable_of_part_of"}
+# Anatomical containment (lung part_of respiratory system). obonet normalises
+# BFO:0000050 to "part_of", but accept both spellings for safety.
+PART_OF_RELATIONS = {"BFO:0000050", "part_of"}
+
 
 def download(name: str, url: str) -> Path:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -71,7 +79,20 @@ def _is_a_parents(graph, term_id: str) -> list[str]:
     return [parent for _, parent, key in graph.out_edges(term_id, keys=True) if key == "is_a"]
 
 
-def extract_terms(obo_path: Path, wanted_ids: set[str], max_depth: int = CACHE_HIERARCHY_DEPTH) -> tuple[dict, str]:
+def _related(graph, term_id: str, relations: set[str], prefix: str | None = None) -> list[str]:
+    """Direct targets of the given relation types, optionally filtered by ID prefix."""
+    if term_id not in graph.nodes:
+        return []
+    return sorted({
+        target for _, target, key in graph.out_edges(term_id, keys=True)
+        if key in relations and (prefix is None or target.startswith(prefix))
+    })
+
+
+def extract_terms(
+    obo_path: Path, wanted_ids: set[str], max_depth: int = CACHE_HIERARCHY_DEPTH,
+    expand_part_of: bool = False,
+) -> tuple[dict, str, dict]:
     """
     Resolve `wanted_ids` plus every is_a ancestor reachable within `max_depth`
     hops (BFS, all parents on multiple-inheritance terms — no single path is
@@ -83,30 +104,59 @@ def extract_terms(obo_path: Path, wanted_ids: set[str], max_depth: int = CACHE_H
     graph = obonet.read_obo(obo_path)
     data_version = graph.graph.get("data-version", "unknown")
 
+    # Expand along every relation the runtime lookup may later traverse, or those
+    # targets land in the cache as NOT_FOUND with no label (caught in verification).
     all_ids = set(wanted_ids)
     frontier = set(wanted_ids)
     for _ in range(max_depth):
-        next_frontier = {p for tid in frontier for p in _is_a_parents(graph, tid)} - all_ids
+        next_frontier = {p for tid in frontier for p in _is_a_parents(graph, tid)}
+        if expand_part_of:
+            next_frontier |= {p for tid in frontier for p in _related(graph, tid, PART_OF_RELATIONS)}
+        next_frontier -= all_ids
         if not next_frontier:
             break
         all_ids |= next_frontier
         frontier = next_frontier
-    print(f"  {len(wanted_ids)} requested ids -> {len(all_ids)} including is_a ancestors up to depth {max_depth}")
+    rels = "is_a + part_of" if expand_part_of else "is_a"
+    print(f"  {len(wanted_ids)} requested ids -> {len(all_ids)} including {rels} ancestors up to depth {max_depth}")
 
     resolved = {}
+    go_ids: set[str] = set()
     for term_id in sorted(all_ids):
         if term_id not in graph.nodes:
-            resolved[term_id] = {"label": None, "definition": None, "status": "NOT_FOUND", "parents": []}
+            resolved[term_id] = {"label": None, "definition": None, "status": "NOT_FOUND",
+                                 "parents": [], "part_of": [], "capable_of": []}
             continue
         node = graph.nodes[term_id]
         is_obsolete = str(node.get("is_obsolete", "false")).strip().lower() == "true"
+        # capable_of / capable_of_part_of link a cell type to GO biological processes —
+        # the only relation in CL that yields *properties* rather than taxonomy (§4.1).
+        capable_of = _related(graph, term_id, CAPABLE_OF_RELATIONS, prefix="GO:")
+        go_ids.update(capable_of)
         resolved[term_id] = {
             "label": node.get("name"),
             "definition": _clean_definition(node.get("def")),
             "status": "OBSOLETE" if is_obsolete else "OK",
             "parents": _is_a_parents(graph, term_id),
+            # obonet normalises BFO:0000050 to "part_of"; anatomical containment for UBERON
+            "part_of": _related(graph, term_id, PART_OF_RELATIONS),
+            "capable_of": capable_of,
         }
-    return resolved, data_version
+
+    # GO terms referenced by capable_of are already present as nodes inside cl.obo,
+    # so their names/definitions come free — no separate go.obo download needed.
+    go_terms = {}
+    for go_id in sorted(go_ids):
+        node = graph.nodes.get(go_id, {})
+        go_terms[go_id] = {
+            "label": node.get("name"),
+            "definition": _clean_definition(node.get("def")),
+            "status": "OK" if node.get("name") else "NOT_FOUND",
+        }
+    if go_terms:
+        n_named = sum(1 for v in go_terms.values() if v["label"])
+        print(f"  {len(go_terms)} GO process terms referenced via capable_of ({n_named} with names)")
+    return resolved, data_version, go_terms
 
 
 def main() -> None:
@@ -123,8 +173,8 @@ def main() -> None:
     cl_path = download("cl", SOURCES["cl"])
     uberon_path = download("uberon", SOURCES["uberon"])
 
-    cl_resolved, cl_version = extract_terms(cl_path, cl_ids)
-    uberon_resolved, uberon_version = extract_terms(uberon_path, uberon_ids)
+    cl_resolved, cl_version, go_terms = extract_terms(cl_path, cl_ids)
+    uberon_resolved, uberon_version, _ = extract_terms(uberon_path, uberon_ids, expand_part_of=True)
 
     for label, resolved in [("CL", cl_resolved), ("UBERON", uberon_resolved)]:
         n_ok = sum(1 for v in resolved.values() if v["status"] == "OK")
@@ -142,7 +192,10 @@ def main() -> None:
             "built_at": datetime.now(timezone.utc).isoformat(),
             "dataset_hash": ds.dataset_hash,
             "hierarchy_cache_depth": CACHE_HIERARCHY_DEPTH,
+            "go_terms_extracted": len(go_terms),
+            "relations_extracted": sorted({"is_a"} | CAPABLE_OF_RELATIONS | PART_OF_RELATIONS),
         },
+        "go": go_terms,
         "cl": cl_resolved,
         "uberon": uberon_resolved,
     }

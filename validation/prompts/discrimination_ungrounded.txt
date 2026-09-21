@@ -1,0 +1,24 @@
+You are testing whether a proposed biological property genuinely describes particular cell types. You are NOT told what gene this relates to, and you are NOT told anything about which cell types the property was derived from — judge each one independently and on its own merits.
+
+Proposed property:
+"{property_text}"
+
+Below is a numbered list of cell types, each with the tissue it was observed in. The list is in no meaningful order. For each entry, decide whether the proposed property genuinely applies to that cell type in that tissue.
+
+Cell types:
+{cell_type_list}
+
+For each index, respond with exactly one of:
+- "applies" — the property is a fair and accurate description of this cell type.
+- "partial" — the property is partly true of this cell type, or true only in some circumstances.
+- "does_not_apply" — the property is not a fair description of this cell type.
+- "insufficient_information" — you genuinely cannot tell for this cell type. Use this rather than guessing; reporting honest uncertainty is more useful here than a confident wrong answer.
+
+Judge every entry independently. Do not try to infer a pattern across the list, and do not let the proportion of your answers influence individual judgements — it is entirely possible that the property applies to all of them, none of them, or any fraction in between.
+
+Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it, one entry per index shown above:
+{{
+  "judgments": [
+    {{"index": <int>, "verdict": "applies" | "partial" | "does_not_apply" | "insufficient_information"}}
+  ]
+}}

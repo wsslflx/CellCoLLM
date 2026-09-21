@@ -5,3 +5,4 @@ mlartifacts/
 __pycache__/
 *.pyc
 data/ontologies/raw/
+data/

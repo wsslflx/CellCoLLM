@@ -14,6 +14,8 @@ artifact schema this mirrors — config_hash, provenance, etc.).
 """
 from __future__ import annotations
 
+import os
+
 import hashlib
 import json
 import subprocess
@@ -28,7 +30,9 @@ import mlflow
 _PROJECT_ROOT = Path(__file__).parents[1]
 # MLflow 3.x deprecated the plain filesystem store; sqlite is the documented
 # lightweight replacement (PIPELINE_REQUIREMENTS.md §7.6).
-_TRACKING_URI = f"sqlite:///{_PROJECT_ROOT / 'mlflow.db'}"
+# CELLCO_MLFLOW_URI redirects every run to another store (scratch experiments, tests);
+# unset, behaviour is unchanged.
+_TRACKING_URI = os.environ.get("CELLCO_MLFLOW_URI") or f"sqlite:///{_PROJECT_ROOT / 'mlflow.db'}"
 
 
 def _experiment_name(approach: str) -> str:
