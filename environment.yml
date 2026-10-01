@@ -12,3 +12,9 @@ dependencies:
   - pip:
       - langchain-ollama
       - obonet
+      - matplotlib
+      - seaborn
+      - jupyter
+      - ipykernel
+      - nbformat
+      - nbconvert

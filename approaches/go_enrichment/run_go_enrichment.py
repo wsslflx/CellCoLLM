@@ -56,7 +56,7 @@ from core.go_evidence import (
     UNIT_CELL_TYPES, UNIT_ROWS, baselines_key, corrected_stats, rank_corrected, rank_gprofiler,
 )
 from core.go_experiment import GOShared
-from core.go_scoring import log_scored_predictions
+from core.go_scoring import log_scored_predictions, log_significant_only_score
 from core.mlflow_utils import (
     RunContext,
     get_or_create_gene_parent_run,
@@ -65,6 +65,7 @@ from core.mlflow_utils import (
     tracked_run,
 )
 from core.ontology_lookup import OntologyLookup
+from core.run_identity import fingerprint
 
 APPROACH = "go_enrichment"
 PROMPT_VERSIONS = {
@@ -124,6 +125,9 @@ def _context(args, gene_id, gene_symbol, prompt_version, input_set, unit, statis
     if shared is not None and shared.truth is not None:
         tags["stratum"] = shared.stratum(gene_id)
     tags["condition"] = f"{APPROACH}:{prompt_version}:{input_set}"
+    tags["code_hash"] = fingerprint(APPROACH)   # content hash of the files that shape this run's output
+    if getattr(args, "unfrozen_override", False):
+        tags["unfrozen_override"] = True        # test-split run started without a matching freeze
     return RunContext(
         approach=APPROACH,
         approach_version=prompt_version,
@@ -211,6 +215,13 @@ def run_direction(
                   f"See approaches/README.md (go_enrichment / background-query size problem).")
 
         log_json_artifact([r.as_dict() for r in results], "enrichment_results.json")
+        # g:Profiler's own default (significant=TRUE) returns ONLY this table, not the full one above.
+        # We keep the full table as what's actually scored (go_predictions.json, below) because a
+        # significant-only cut would shrink or empty the ranked list for many genes (10/40 dev genes had
+        # zero significant A1' terms) for reasons unrelated to prediction quality, and would unfairly
+        # handicap the no-LLM rungs against go_llm, which always answers with up to 10 terms. This
+        # artifact exists purely so "what would g:Profiler actually show you" is inspectable separately.
+        log_json_artifact([r.as_dict() for r in results if r.p_gscs < args.alpha], "enrichment_results_significant_only.json")
         log_json_artifact(diag, "gscs_simulation.json")
         tsv = "\t".join(TSV_COLUMNS) + "\n" + "\n".join(
             "\t".join(str(getattr(r, c)) for c in TSV_COLUMNS) for r in results
@@ -241,11 +252,15 @@ def run_direction(
         # Score the POSITIVE direction against the gene's own GO annotation (same run).
         if args.score and input_set == "positive" and shared is not None and shared.truth.has(gene_id):
             cands = shared.builder.candidates
+            rank_p = rank_gprofiler(results, cands, shared.builder.labels, "p")
             m = log_scored_predictions(
-                rank_gprofiler(results, cands, shared.builder.labels, "p"),
-                rank_gprofiler(results, cands, shared.builder.labels, "effect"),
+                rank_p, rank_gprofiler(results, cands, shared.builder.labels, "effect"),
                 shared.truth, gene_id, shared.model)
             print(f"[{input_set}] scored: F1@3={m['f1_at_3']:.3f}  headroom@3={m.get('headroom_at_3', float('nan')):.3f}")
+            sig_ids = {r.go_id for r in results if r.p_gscs < args.alpha}
+            ms = log_significant_only_score(rank_p, sig_ids, shared.truth, gene_id, shared.model)
+            print(f"[{input_set}] significant-only (p_gscs<{args.alpha}, {len(sig_ids)} terms): "
+                  + (f"F1@3={ms['f1_at_3']:.3f}  headroom@3={ms.get('headroom_at_3', float('nan')):.3f}" if ms else "no significant terms"))
 
 
 def run_corrected(ds, lookup, gene_id, gene_symbol, parent_run_id, prompt_version, args, shared) -> None:
@@ -275,6 +290,8 @@ def run_corrected(ds, lookup, gene_id, gene_symbol, parent_run_id, prompt_versio
             "max_excess": max((r.excess for r in live), default=0.0),
         })
         log_json_artifact([r.as_dict() for r in results], "enrichment_results.json")
+        # Same note as v1/v2: g:Profiler's significant=TRUE default would show only this subset.
+        log_json_artifact([r.as_dict() for r in live if r.q_value < args.alpha], "enrichment_results_significant_only.json")
         top = sorted((r for r in live if r.excess > 0), key=lambda r: r.p_value)[:8]
         print("[contrast] top enriched terms by p:")
         for r in top:
@@ -282,9 +299,14 @@ def run_corrected(ds, lookup, gene_id, gene_symbol, parent_run_id, prompt_versio
                   f"q={r.q_value:8.2e}  {r.k_pos:4d}/{r.K:<4d}  {r.label[:44]}")
         mlflow.set_tag("status", "COMPLETED")
         if args.score and shared.truth.has(gene_id):
-            m = log_scored_predictions(rank_corrected(results, "p"), rank_corrected(results, "effect"),
+            rank_p = rank_corrected(results, "p")
+            m = log_scored_predictions(rank_p, rank_corrected(results, "effect"),
                                        shared.truth, gene_id, shared.model)
             print(f"[contrast] scored: F1@3={m['f1_at_3']:.3f}  headroom@3={m.get('headroom_at_3', float('nan')):.3f}")
+            sig_ids = {r.go_id for r in live if r.q_value < args.alpha}
+            ms = log_significant_only_score(rank_p, sig_ids, shared.truth, gene_id, shared.model)
+            print(f"[contrast] significant-only (q<{args.alpha}, {len(sig_ids)} terms): "
+                  + (f"F1@3={ms['f1_at_3']:.3f}  headroom@3={ms.get('headroom_at_3', float('nan')):.3f}" if ms else "no significant terms"))
 
 
 def run_transfer(ds, lookup, gene_id, gene_symbol, parent_run_id, prompt_version, args, shared) -> None:

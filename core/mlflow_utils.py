@@ -18,6 +18,7 @@ import os
 
 import hashlib
 import json
+import re
 import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -61,9 +62,14 @@ def compute_config_hash(**fields: Any) -> str:
 
 
 def verify_blinding(text: str, forbidden_terms: list[str]) -> tuple[bool, list[str]]:
-    """Case-insensitive scan for terms that must never reach an LLM prompt (gene symbol, aliases, ...)."""
-    lowered = text.lower()
-    hits = [t for t in forbidden_terms if t and t.lower() in lowered]
+    """
+    Case-insensitive, WORD-BOUNDARY scan for terms that must never reach an LLM prompt (gene symbol,
+    aliases, ...). Word-boundary, not plain substring: a short real gene symbol (e.g. "REN", renin)
+    is also a common English letter sequence ("diffeREN t", "curREN t", "childREN") and a naive
+    substring check false-positives on it, aborting a real run over nothing. Matches the same
+    word-boundary approach already used for HGNC aliases in approaches/go_llm/run_go_llm.py.
+    """
+    hits = [t for t in forbidden_terms if t and re.search(rf"(?<![A-Za-z0-9]){re.escape(t)}(?![A-Za-z0-9])", text, re.I)]
     return (len(hits) == 0, hits)
 
 

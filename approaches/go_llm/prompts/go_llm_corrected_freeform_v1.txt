@@ -16,7 +16,27 @@ EVIDENCE — processes of cell types where the gene is expressed LESS than expec
 Your task is to INTERPRET this evidence, not to repeat it.
 1. Say what biological program or cell state the expressing cell types have in common, and what the pattern of under-expression rules out.
 2. Reason from that program to the gene: what kind of molecular machinery (receptors, transporters, enzymes, regulators, structural components) would a gene need to have in order to be expressed in exactly this pattern, and what processes would that machinery take part in?
-3. Name the Gene Ontology biological-process terms you expect to be annotated to the gene ITSELF, most likely first (up to 10). Gene annotations describe what the gene product does — usually more specific than the cell-level behaviours in the evidence. The evidence terms are clues, not answers: naming one is right only if you can argue that the gene itself takes part in that process. Only biological PROCESS terms are accepted: terms ending in "activity" are molecular functions and terms naming a cellular location are components, and both are rejected. Write each term exactly as it is named in the Gene Ontology; if you are not sure of the exact wording, use a slightly more general process term whose name you are sure of. Prefer specific processes over very generic ones such as "cellular process" or "biological regulation".
+3. Name the Gene Ontology biological-process terms you expect to be annotated to the gene ITSELF, most
+   likely first (up to 10 — fewer is fine; do not pad the list with generic terms once you run out of
+   specific ones). Gene annotations describe what the gene product does — usually more specific than
+   the cell-level behaviours in the evidence. The evidence terms are clues, not answers: naming one is
+   right only if you can argue that the gene itself takes part in that process.
+   Only biological PROCESS terms are accepted — not molecular functions, not cellular components.
+   Before including any term, check it against this rule: a process is something a cell or molecule
+   DOES, over time, as part of a pathway or event — not a capability, a part, or a single molecular
+   action. If the term names or implies a capability (a word like "activity", "binding") or a part of
+   the cell, it is a function or component, not a process, no matter how biological it sounds — rewrite
+   it as the broader pathway or event that capability takes part in instead of using it as written.
+   This is a hard rule with no exceptions: a term that literally contains the word "activity" anywhere
+   in it is NEVER a valid answer, even if it otherwise looks specific and well-matched to the evidence.
+   If your best candidate contains that word, you must replace it with the broader process it belongs
+   to before including it — do not include it as written and do not skip the replacement step.
+   Write each term exactly as it is named in the Gene Ontology; if you are not sure of the exact
+   wording, use a slightly more general process term whose name you are sure of. Prefer specific
+   processes over very generic ones such as "cellular process" or "biological regulation" — if you
+   cannot think of a specific one, give fewer terms rather than filling the list with generic ones.
+   Before you respond, re-read your finished list one more time and check each term for the word
+   "activity" — if you find it, fix that term now. Do this check last, after everything else above.
 
 Respond with exactly one JSON object and nothing else — no markdown, no headers, no text before or after it. Put the hypothesis FIRST, then the terms:
 {{

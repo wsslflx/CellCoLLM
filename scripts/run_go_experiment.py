@@ -22,11 +22,18 @@ analysis time (scripts/analyze_go_experiment.py), not as runs.
 Genes come from data/go_experiment/genes.tsv (scripts/select_go_genes.py). Run the
 development split first, freeze the prompts, then the test split.
 
+`--split all` instead runs over EVERY gene in the dataset (no genes.tsv, no stratum, no freeze
+check — tagged gene_split="all"), for a full-dataset pass of one or a few cheap no-LLM conditions
+rather than the selected dev/test sample. `--condition approach:version[:mode:evidence]` (repeatable)
+overrides --stage with an exact list of conditions, e.g. `--condition go_enrichment:v1` runs only
+that one instead of the whole baselines/constrained/freeform set.
+
 Usage:
     python scripts/run_go_experiment.py --split dev --stage baselines
     python scripts/run_go_experiment.py --split dev --stage constrained --limit 10
     python scripts/run_go_experiment.py --split test --stage all
     python scripts/run_go_experiment.py --split smoke --stage all --dry-run
+    python scripts/run_go_experiment.py --split all --condition go_enrichment:v1
 """
 from __future__ import annotations
 
@@ -46,6 +53,7 @@ import run_go_enrichment as A1
 import run_go_llm as LLM
 from core.go_experiment import GOShared
 from core.mlflow_utils import _TRACKING_URI
+from core.run_identity import fingerprint, verify_freeze
 
 GENES_FILE = Path(__file__).parents[1] / "data" / "go_experiment" / "genes.tsv"
 MAX_CONSECUTIVE_FAILURES = 5
@@ -73,19 +81,43 @@ def condition_key(c: dict) -> str:
     return f"go_llm:{c['version']}:{c['mode']}:{c['evidence']}"
 
 
-def completed(split: str) -> set[tuple[str, str]]:
-    """(condition, gene_id) already COMPLETED for this split, one query per experiment."""
+def parse_condition(spec: str) -> dict:
+    """'go_enrichment:v1' or 'go_llm:v3:freeform:true' -> the dict shape conditions_for() produces."""
+    parts = spec.split(":")
+    if parts[0] == "go_enrichment" and len(parts) == 2:
+        return {"kind": "go_enrichment", "version": parts[1]}
+    if parts[0] == "go_llm" and len(parts) == 4:
+        return {"kind": "go_llm", "version": parts[1], "mode": parts[2], "evidence": parts[3]}
+    raise argparse.ArgumentTypeError(
+        f"--condition must be 'go_enrichment:vN' or 'go_llm:vN:mode:evidence', got {spec!r}")
+
+
+def completed(split: str) -> tuple[set[tuple[str, str]], dict[str, int]]:
+    """
+    ((condition, gene_id) COMPLETED under the CURRENT code hash, {approach: n stale runs}).
+
+    A run completed under a DIFFERENT hash (older prompt, changed scoring, or produced before hashes
+    existed) does not count: skipping it would silently keep results from code that no longer exists.
+    """
     mlflow.set_tracking_uri(_TRACKING_URI)
     done: set[tuple[str, str]] = set()
-    for name in ("CellCoLLM/go_enrichment", "CellCoLLM/go_llm"):
-        exp = mlflow.get_experiment_by_name(name)
+    stale: dict[str, int] = {}
+    for approach in ("go_enrichment", "go_llm"):
+        exp = mlflow.get_experiment_by_name(f"CellCoLLM/{approach}")
         if exp is None:
             continue
         df = mlflow.search_runs([exp.experiment_id], max_results=50000,
                                 filter_string=f"tags.status = 'COMPLETED' and tags.gene_split = '{split}'")
-        if len(df):
-            done |= set(zip(df["tags.condition"], df["tags.gene_id"]))
-    return done
+        if not len(df):
+            continue
+        current = fingerprint(approach)
+        hashes = df["tags.code_hash"] if "tags.code_hash" in df else [None] * len(df)
+        for cond, gene, h in zip(df["tags.condition"], df["tags.gene_id"], hashes):
+            if h == current:
+                done.add((cond, gene))
+            else:
+                stale[approach] = stale.get(approach, 0) + 1
+    return done, stale
 
 
 def read_genes(path: Path, split: str, stratum: str | None) -> list[dict]:
@@ -94,6 +126,13 @@ def read_genes(path: Path, split: str, stratum: str | None) -> list[dict]:
     if stratum:
         rows = [r for r in rows if r["stratum"] == stratum]
     return rows
+
+
+def all_dataset_genes() -> list[dict]:
+    """Every gene in the dataset, for --split all. Scoreability is still checked per-gene in the
+    main loop (shared.truth.has), so genes with no GO annotation are skipped there, not here."""
+    from core.data_loader import read_gene_ids
+    return [{"gene": g, "symbol": "", "stratum": ""} for g in read_gene_ids()]
 
 
 def server_reachable() -> bool:
@@ -107,26 +146,36 @@ def server_reachable() -> bool:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--split", required=True, choices=["dev", "test", "smoke"])
+    ap.add_argument("--split", required=True, choices=["dev", "test", "smoke", "all"],
+                    help="'all' = every gene in the dataset, no genes.tsv, no freeze check")
     ap.add_argument("--stage", default="all", choices=["baselines", "constrained", "freeform", "all"])
+    ap.add_argument("--condition", dest="conditions", action="append", type=parse_condition,
+                    help="'approach:version[:mode:evidence]' (repeatable); overrides --stage with exactly these")
     ap.add_argument("--genes-file", default=str(GENES_FILE))
-    ap.add_argument("--stratum", default=None, choices=["carrying", "not_carrying"], help="Restrict to one stratum")
+    ap.add_argument("--stratum", default=None, choices=["carrying", "not_carrying"],
+                    help="Restrict to one stratum (not available with --split all, which has none)")
     ap.add_argument("--limit", type=int, default=None, help="At most this many genes")
     ap.add_argument("--model", default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--dry-run", action="store_true", help="List what would run, run nothing")
+    ap.add_argument("--allow-unfrozen", action="store_true",
+                    help="Run the test split without a matching freeze (the runs are tagged unfrozen_override)")
     args = ap.parse_args()
 
+    if args.stratum and args.split == "all":
+        raise SystemExit("--stratum needs a genes.tsv-based split (dev/test); --split all has no stratum.")
     if args.split == "smoke":
         genes = [{"gene": g, "symbol": s, "stratum": ""} for g, s in
                  [("ENSG00000132763", "MMACHC"), ("ENSG00000129696", "TTI2"), ("ENSG00000149554", "CHEK1")]]
+    elif args.split == "all":
+        genes = all_dataset_genes()
     else:
         if not Path(args.genes_file).exists():
             raise SystemExit(f"{args.genes_file} not found. Run: python scripts/select_go_genes.py")
         genes = read_genes(Path(args.genes_file), args.split, args.stratum)
     if args.limit:
         genes = genes[: args.limit]
-    conds = conditions_for(args.stage)
+    conds = args.conditions if args.conditions else conditions_for(args.stage)
     needs_llm = any(c["kind"] == "go_llm" for c in conds)
     print(f"split={args.split} stage={args.stage}: {len(genes)} genes x {len(conds)} conditions "
           f"= {len(genes) * len(conds)} runs")
@@ -140,8 +189,20 @@ def main() -> None:
 
     print("Loading shared state (dataset, ontology, annotations, baselines)...")
     shared = GOShared.load()
-    done = completed(args.split)
-    print(f"  {len(done)} (condition, gene) pairs already COMPLETED for split={args.split}; these are skipped")
+    if args.split == "test":
+        problems = verify_freeze(shared, args.genes_file)
+        if problems and not args.allow_unfrozen:
+            raise SystemExit("The test split runs only against a frozen pipeline, and the freeze does not match:\n  - "
+                             + "\n  - ".join(problems)
+                             + "\nIf the change is intended, tune on dev, then re-freeze: python scripts/freeze_go_experiment.py"
+                             + "\n(--allow-unfrozen overrides this and tags the runs.)")
+        if problems:
+            print("WARNING: running the test split UNFROZEN:\n  - " + "\n  - ".join(problems))
+    unfrozen = args.split == "test" and bool(verify_freeze(shared, args.genes_file))
+    done, stale = completed(args.split)
+    print(f"  {len(done)} (condition, gene) pairs already COMPLETED under the current code for split={args.split}; these are skipped")
+    for approach, n in stale.items():
+        print(f"  {n} {approach} runs were completed under DIFFERENT code and do not count — those conditions run again")
 
     t0, n_run, n_skip, n_fail, consecutive = time.time(), 0, 0, 0, 0
     total = len(genes) * len(conds)
@@ -159,11 +220,13 @@ def main() -> None:
             try:
                 if c["kind"] == "go_enrichment":
                     a = A1.make_args(gene=gid, prompt_version=c["version"], universe="called",
-                                     input_set="positive", gene_split=args.split, seed=args.seed)
+                                     input_set="positive", gene_split=args.split, seed=args.seed,
+                                     unfrozen_override=unfrozen)
                     A1.run_gene(gid, sym, a, shared)
                 else:
                     a = LLM.make_args(gene=gid, prompt_version=c["version"], output_mode=c["mode"],
-                                      evidence=c["evidence"], gene_split=args.split, seed=args.seed, model=args.model)
+                                      evidence=c["evidence"], gene_split=args.split, seed=args.seed, model=args.model,
+                                      unfrozen_override=unfrozen)
                     LLM.run_gene(gid, sym, a, shared)
                 n_run += 1
                 consecutive = 0

@@ -571,6 +571,52 @@ secretion`, `prostaglandin production`, `peripheral tolerance` and more all at e
 `8/16` — these are all mast-cell terms, inflated together by 8 mast-cell *rows*. v2 exists
 for comparison with v1, not as a defensible primary analysis.
 
+**4. g:Profiler's real defaults, checked against the official docs and the current
+`gprofiler2` client** (`gost()`, the live tool's own interface — not the retired
+`gProfileR` package):
+
+| Parameter | g:Profiler default | Here |
+|---|---|---|
+| `correction_method` | `g_SCS` | ✅ g:SCS, primary |
+| `user_threshold` (α) | `0.05` | ✅ `--alpha 0.05` |
+| `domain_scope` | `annotated` ("only annotated genes") | ✅ `--universe annotated` |
+| `ordered_query` | `FALSE` | ✅ query is an unordered set |
+| `measure_underrepresentation` | `FALSE` (over-representation only) | ✅ one-sided in v1/v2 |
+| `significant` | `TRUE` — **only significant terms are returned** | ⚠️ see below |
+| term-size filter | **none** — `min_set_size`/`max_set_size` do not exist in `gost()`; they were a `gProfileR`-only parameter, removed from the current client | ⚠️ see below |
+
+**`significant=TRUE` is deliberately not mirrored for scoring, and here is why.**
+g:Profiler's default only affects what is *displayed* — the statistics underneath are
+identical either way. In this pipeline, the ranked term list isn't just a display: it is
+`go_predictions.json`, the exact object the IC-weighted F1/headroom scoring reads. Cutting
+it to significant-only would make it empty or near-empty for a large share of genes for
+reasons that have nothing to do with prediction quality — measured on 40 dev genes,
+**10 of 40 genes have zero significant A1' (v3) terms**, median 3. Worse, `go_llm` always
+answers with up to 10 terms regardless of significance, so forcing the no-LLM rungs down
+to a significant-only list would not test "is the LLM better", it would test "does the LLM
+get to answer with more candidates" — confounding the C1/C2 contrasts. So the full ranked
+table stays what gets scored *primarily*. What g:Profiler would actually show by default is
+logged alongside it as `enrichment_results_significant_only.json`, for inspection — and,
+for v1–v4 only (the versions with a real hypothesis test), **also scored** as a SECONDARY
+metric: `gopred_sigonly_f1_at_k` / `gopred_sigonly_headroom_at_k`, computed on the same
+ranking restricted to terms with `p_gscs < alpha` (v1/v2) or `q_value < alpha` (v3/v4),
+alpha defaulting to g:Profiler's own `0.05`. `gopred_sigonly_n_significant` is logged even
+when it's 0, and scoring is skipped rather than recorded as a misleading F1=0 in that case
+(`core/go_scoring.log_significant_only_score`). This is informational — "how good is arm 1
+when it's actually confident" — and is **not** part of the pre-registered contrasts, for the
+same list-length-fairness reason above. On MSR1 it already shows the expected direction:
+full-list F1@3 = 0.022 (headroom −0.10) vs significant-only F1@3 = 0.044 (headroom +0.04).
+
+**The `--min-term-size 3` filter has no g:Profiler default to approximate — there isn't
+one in the current client.** It exists only because our annotation universe is far
+sparser than genome-wide gene annotation: of the 124 candidate GO terms, **55 are carried
+by exactly 1 cell type and 17 more by exactly 2** (measured on the real cache). A term
+with one or two carriers has no meaningful "is this count surprising" question to ask —
+testing it anyway only adds a wasted hypothesis to the multiple-testing correction and
+occasionally a spurious "100% enriched" from one data point. `--min-term-size 3` removes
+these 72 terms before testing, leaving the 52 "candidate" terms used throughout. This is
+our own necessary addition, not a reproduction of anything g:Profiler does.
+
 ### Versions
 
 | version | statistic | unit | query/background for MMACHC positive |
@@ -603,14 +649,11 @@ non-independence in caveat 3, so it is not a free win.
 | `--transfer-min-genes` | 30 | v5/v6: a gene-level GO term needs this many annotated genes to enter the transfer vocabulary (2,738 terms at 30) |
 | `--transfer-top-n` | 100 | v5/v6: length of the ranked prediction list |
 | `--go-depth` | 3 | Inheritance depth for `capable_of` |
-| `--min-term-size` | 3 | **56 of the 126 GO terms extracted from CL cover exactly one cell type** (124 of the 126 are biological processes) and cannot be meaningfully enriched |
+| `--min-term-size` | 3 | **55 of the 124 candidate GO terms are carried by exactly 1 cell type, 17 more by exactly 2** — our own addition (see Fidelity caveat 4), not a g:Profiler default |
 | `--max-term-size` | 0 | 0 = unlimited |
 | `--n-simulations` | 2000 | Random queries for the g:SCS threshold, matching g:Profiler's original simulation count |
-| `--alpha` | 0.05 | |
+| `--alpha` | 0.05 | matches g:Profiler's `user_threshold` default |
 | `--seed` | 42 | g:SCS threshold is reproducible per seed |
-
-g:Profiler's exact term-size defaults are not published; ours are chosen for this
-annotation's scale and logged with every run.
 
 ### What it logs
 
@@ -869,12 +912,43 @@ sparsely annotated genes where one matching term scores F1 = 1.0 trivially); ove
 positive rate in [0.05, 0.60] (uses expression only, never truth); ceiling-minus-floor above
 a quantile of the survivors. Primary stratum = the gene carries a candidate term. Split is
 deterministic by hash. **All prompt wording, top-N, ranking and threshold choices are made on
-the dev split only; then the code is frozen (the git commit is recorded on every run) and the
-test split is run once.** The analysis reports if more than one commit contributed runs.
+the dev split only; then the pipeline is frozen and the test split is run once.** How that is
+enforced is under "Run identity and freezing" below.
 
 Selection uses truth-derived criteria (carrying, room). That is disclosed: results generalise
 to the selected stratum, not to all genes. Three genes are not enough for an inference — the
 per-gene noise is large; dozens to hundreds of genes are needed.
+
+### Run identity and freezing
+
+The git tag on a run is `commit` or `commit-dirty`. With a dirty tree, two different prompt versions
+carry the same tag, and a resumable runner keyed on (condition, gene) alone would silently keep
+results produced by an *old* prompt. So identity is by **content**:
+
+- Every `go_enrichment` and `go_llm` run carries a **`code_hash` tag**: a hash of the files that shape
+  its output — `go_llm`: its run script, all four prompt templates, the evidence/scoring/ontology code and
+  the LLM plumbing; `go_enrichment`: its run script and the statistics/evidence/scoring/transfer/ontology
+  code (`core/run_identity.py` lists them). Changing a prompt or a scoring function changes the hash;
+  changing a README, or the *other* approach's code, does not. Restoring an edit restores the hash.
+- **`scripts/run_go_experiment.py` skips a condition only if it was completed under the current hash.**
+  Runs from other code (or from before hashes existed) are reported as stale and their conditions run
+  again, so an interrupted run resumes, and a changed prompt is never mistaken for finished work.
+- **`scripts/analyze_go_experiment.py` uses runs from exactly one code version** — the current one for
+  dev, the *frozen* one for test — lists what it excluded, and refuses to run if nothing matches.
+  `--allow-mixed` exists for plumbing checks and stamps the report as not a valid analysis.
+- **`scripts/freeze_go_experiment.py`** writes `approaches/go_experiment_freeze.json` when dev work is
+  finished: the code fingerprints (plus the sha256 of every file behind them, so a mismatch names the
+  file), the data the results depend on (dataset hash, baselines key, CL and GO versions, the GOA file
+  hash), the sha256 of the gene list, and the git HEAD and dirty state. **Commit the manifest with the
+  code it describes.** `python scripts/freeze_go_experiment.py --check` compares the current state with it.
+- **The test split will not run unless code, data and gene list all still match the freeze**
+  (`--allow-unfrozen` overrides it and tags every run `unfrozen_override`, which the analysis excludes).
+  Changing anything after freezing therefore needs a deliberate re-freeze that shows up in git history.
+
+`data/` is git-ignored. Its derived files (`ontology_cache.json`, `feature_baselines.json`,
+`go_baselines.json`, `go_ceiling_genes.tsv`, `go_ceiling_report.json`) are deterministic outputs of the
+raw files in `data/ontologies/raw/` and rebuild with the four commands in the Scripts table; they came
+back byte-identical after they were lost once.
 
 ### Pre-registered contrasts
 
@@ -918,8 +992,9 @@ python scripts/build_go_baselines.py                                   # once: p
 python scripts/select_go_genes.py --n-dev 40 --n-test 120              # writes data/go_experiment/genes.tsv
 python scripts/run_go_experiment.py --split dev --stage baselines      # no LLM, seconds per gene
 python scripts/run_go_experiment.py --split dev --stage freeform --limit 10   # the primary family
-#   ... tune on dev only, then freeze the code ...
-python scripts/run_go_experiment.py --split test --stage all           # resumable: re-run to continue
+#   ... tune on dev only, then freeze (commit the manifest together with the code) ...
+python scripts/freeze_go_experiment.py --note "what was decided, after which dev round"
+python scripts/run_go_experiment.py --split test --stage all           # refuses unless frozen; resumable
 python scripts/analyze_go_experiment.py --eval-split test
 ```
 
@@ -952,6 +1027,25 @@ what the test split answers.
 - A free-form answer that leaves the evidence vocabulary can still be scored only against terms
   the resolver can match; unresolved terms (`n_invalid`) are dropped, not penalised, so they lower
   the effective list length rather than the score directly.
+
+### Decisions taken and limitations accepted for now
+
+These were considered and deliberately left as they are; they are recorded so the results are read with
+them in mind.
+
+- **Truth policy: non-IEA.** The ground truth is the gene's GOA biological-process annotations with IEA
+  and ND excluded. That still includes curated but *non-experimental* evidence: of the 130,285 rows kept,
+  **47.5% are experimental** (IDA 28.4%, IMP 16.7%, IGI 1.4%, IEP 0.7%, …) and **52.5% are not** (IBA
+  19.8%, ISS 14.8%, TAS 9.0%, NAS 8.3%, IC 0.6%). Some of the latter are inferred from sequence or
+  phylogeny rather than measured, so the truth is broader — and partly more circular with respect to
+  cell-type annotation — than an experimental-only truth would be. No experimental-only sensitivity run
+  has been made; if a result depends on this choice, that is the first check to run.
+- **Arm 1 coverage.** Only 358 of 677 cell types carry any GO term (53%), so part of a gene's expression
+  signal never reaches the evidence; the annotated share of each gene's positives is not logged. Genes
+  whose positives are mostly unannotated cell types simply have little evidence to work with.
+- **Arm 2 hypothesis text.** The model's `hypothesis` is logged (`response_parsed.json`) but not scored or
+  measured for restating its input; only `frac_in_table` (how much of the *answer* re-lists evidence
+  terms) is computed.
 
 ---
 
@@ -992,13 +1086,55 @@ have almost no GO headroom (ceilings 0.02–0.08) and are not suitable for drawi
 | `scripts/select_go_genes.py` | Eligibility, strata and dev/test split → `data/go_experiment/genes.tsv` | `go_ceiling_genes.tsv` |
 | `scripts/run_go_experiment.py` | Runs every rung × gene in-process, resumable | genes file; LLM server for the LLM stages |
 | `scripts/analyze_go_experiment.py` | Contrasts, controls, gate → `data/go_experiment/analysis_*.md/.json` | MLflow runs |
+| `scripts/summarize_go_matches.py` | Per-condition match/mismatch overview (below) → `data/go_experiment/match_summaries/*.json` | MLflow runs for that one condition |
+| `scripts/freeze_go_experiment.py` | Writes / checks the freeze manifest `approaches/go_experiment_freeze.json` (code fingerprints, data versions, gene-list hash) | genes file |
 | `scripts/run_test_genes.py` | Subprocess-per-run smoke runner for the 3 standard genes | — |
+
+### Match/mismatch overview (`scripts/summarize_go_matches.py`)
+
+A second, cheaper view of a condition's output than the IC-weighted F1/headroom score: for every
+significant (or, where no significance test exists, predicted) term, is it an **exact** match to
+the gene's own direct GO annotation, a **generalisation** (reached by climbing up from a true term
+— the common case, e.g. "phagocytosis, engulfment" (true) → "phagocytosis" (predicted), 1 edge),
+a **specialisation** (climbing up from the prediction reaches a true term — plausible but
+unannotated), or **no match** at all (a lateral relation through a shared ancestor, or nothing
+informative in common). Generalisation and specialisation are each binned by edge distance
+(`core/go_match.py`; default bins `d=1, d=2, d=3, 3<d<=5, 5<d<=10, d>10`).
+
+This is a coarser, simpler measure than the primary score: a raw edge count, with every edge
+weighted the same even though the DAG is uneven (see Fidelity caveat 4 above) — it exists for an
+interpretable breakdown and notebook charts, not to replace IC-weighted F1/headroom.
+
+**Run once per condition, by design.** `--condition go_enrichment:v3:contrast` or
+`--condition go_llm:v3:freeform:true` (one approach:version[:mode:evidence] per invocation), writing
+its own `match_summary__<condition>__<split>.json`. Re-running one arm after a change only means
+re-running this for that one condition; every other condition's file is untouched (verified: file
+mtimes for unrelated conditions do not change). Like the main analysis, it is restricted to the
+CURRENT code hash for that approach (`--allow-mixed` for plumbing checks only), and it is
+deterministic — re-running an unchanged condition reproduces byte-identical bin counts.
+
+**Significance has no meaning for every condition**, and the output says so rather than
+pretending otherwise: `go_enrichment` v1/v2 use g:SCS (`p_gscs < alpha`), v3/v4 use BH
+(`q_value < alpha`), but v5/v6 (co-annotation transfer) and every `go_llm` condition are rankings
+with no hypothesis test at all — for those, the full ranked `go_predictions.json` list is used as
+the "significant" set, and `significance_basis` in the output states this explicitly.
+
+The output is **one JSON file**: pretty-printed (so it reads directly), with a tidy `per_gene`
+table (`pandas.DataFrame(data["per_gene"])` loads straight in — gene, n significant, n exact/
+upward/downward/no-match — for notebook charts), the aggregate histograms, and the exact
+`mlflow.run_ids` it was built from, so a summary is traceable without re-deriving it by hand.
+
+```bash
+python scripts/summarize_go_matches.py --condition go_enrichment:v3:contrast --gene-split test
+python scripts/summarize_go_matches.py --condition go_llm:v3:freeform:true --gene-split test
+```
 
 `data/ontologies/raw/` holds the downloaded ontologies and annotations: `cl.obo`,
 `uberon.obo`, `go-basic.obo` (release 2026-07-26), `goa_human.gaf.gz` and
 `hgnc_complete_set.txt` (the Ensembl ↔ UniProt map that joins the dataset to the GAF).
 Core modules for the GO work: `core/go_ontology.py` (DAG, propagation, IC, name index),
 `core/go_evidence.py` (evidence tables, corrected statistics, rankings),
-`core/go_scoring.py` (deterministic scoring), `core/go_transfer.py` (co-annotation transfer,
+`core/go_scoring.py` (deterministic scoring), `core/go_match.py` (exact/generalisation/
+specialisation classification by edge distance), `core/run_identity.py` (code fingerprints, freeze), `core/go_transfer.py` (co-annotation transfer,
 leave-one-out), `core/go_experiment.py` (shared loader, donor choice), `core/go_enrichment.py`
 (g:Profiler-style test).

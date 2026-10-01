@@ -63,6 +63,7 @@ from core.mlflow_utils import (
     tracked_run,
     verify_blinding,
 )
+from core.run_identity import fingerprint
 from core.structured_llm import call_llm_with_retry
 
 APPROACH = "go_llm"
@@ -120,10 +121,21 @@ def render_table(shared: GOShared, ev: GOEvidence | None, statistics: str, unit:
 
 
 def build_prompt(shared: GOShared, cfg: dict, output_mode: str, evidence: str, ev: GOEvidence | None,
-                 results, include_definition: bool) -> str:
+                 results, include_definition: bool, cache_bust: str | None = None) -> str:
+    """
+    `cache_bust`, if given, prepends an inert metadata-looking line so the byte-for-byte prompt prefix
+    differs per call. DIAGNOSTIC USE ONLY (scripts/measure_llm_noise.py) — never set in a real
+    experiment run. Ollama caches the KV-state of a prompt's processing and replays an EXACT repeated
+    prefix deterministically (confirmed empirically: repeating the identical prompt gave bit-identical
+    output on 20/20 test genes, with a matching latency drop). That makes "run the same prompt N times"
+    measure one real draw plus N-1 guaranteed cache echoes, not N independent samples. Breaking the
+    prefix forces a genuine fresh computation each time so repeat-run variance can be measured honestly.
+    """
     unit, statistics = cfg["unit"], cfg["statistics"]
     unit_desc, unit_word = UNIT_TEXT[unit]
     template = (PROMPTS_DIR / f"go_llm_{statistics}_{output_mode}_v1.txt").read_text()
+    if cache_bust:
+        template = f"[internal request id, not part of the evidence: {cache_bust}]\n\n" + template
     if evidence == "none":
         summary = "No expression evidence is available for this gene."
         listing = ("Candidate GO terms (no expression counts are available):\n"
@@ -216,9 +228,12 @@ def run_gene(gene_id: str, gene_symbol: str, args, shared: GOShared) -> str | No
         dataset_hash=shared.ds.dataset_hash, expression_summary=shared.ds.expression_summary(gene_id))
 
     tags = {"condition": f"{APPROACH}:{args.prompt_version}:{args.output_mode}:{args.evidence}",
-            "output_mode": args.output_mode, "evidence": args.evidence, "stratum": shared.stratum(gene_id)}
+            "output_mode": args.output_mode, "evidence": args.evidence, "stratum": shared.stratum(gene_id),
+            "code_hash": fingerprint(APPROACH)}   # content hash of prompts + code that shape this run
     if args.gene_split:
         tags["gene_split"] = args.gene_split
+    if getattr(args, "unfrozen_override", False):
+        tags["unfrozen_override"] = True        # test-split run started without a matching freeze
     ctx = RunContext(
         approach=APPROACH, approach_version=args.prompt_version, gene_id=gene_id, gene_symbol=gene_symbol,
         species=args.species, model=model, prompt_mode=f"go_{statistics}_{args.output_mode}",
@@ -239,7 +254,8 @@ def run_gene(gene_id: str, gene_symbol: str, args, shared: GOShared) -> str | No
 
     with tracked_run(ctx, parent_run_id=parent_run_id) as run:
         print(f"\n[{ctx.approach_version}:{args.output_mode}:{args.evidence}] {gene_symbol}  run {run.info.run_id}")
-        prompt = build_prompt(shared, cfg, args.output_mode, args.evidence, ev, results, args.include_definition)
+        prompt = build_prompt(shared, cfg, args.output_mode, args.evidence, ev, results, args.include_definition,
+                             cache_bust=getattr(args, "cache_bust", None))
 
         ok, hits = verify_blinding(prompt, [gene_symbol] if gene_symbol != gene_id else [])
         mlflow.set_tag("blinding_verified", ok)
@@ -315,6 +331,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--include-definition", action=argparse.BooleanOptionalAction, default=False,
                     help="Ablation: show each GO term's definition. Off by default for information parity with the baselines")
     ap.add_argument("--gene-split", choices=["dev", "test", "smoke"], default=None)
+    ap.add_argument("--cache-bust", default=None,
+                    help="DIAGNOSTIC ONLY (scripts/measure_llm_noise.py): breaks Ollama's exact-prompt "
+                         "cache so repeats are genuinely independent calls. Never use in a real run.")
     return ap
 
 

@@ -226,3 +226,30 @@ def log_scored_predictions(
         mlflow.log_metrics({f"gopred_effect_{k}": float(v) for k, v in eff.items()
                             if k.startswith(("f1_at_", "headroom_at_"))})
     return metrics
+
+
+def log_significant_only_score(
+    rank_p: list[dict], significant_ids: set[str], truth: GOTruth, gene_id: str, model: CeilingModel | None,
+) -> dict | None:
+    """
+    SECONDARY metric for arm 1 (go_enrichment v1-v4 only, where a real significance test exists):
+    F1@k/headroom computed on the SAME ranking as the primary score, but restricted to terms that
+    actually cleared the significance threshold (g:SCS or BH, at --alpha). Logged as `gopred_sigonly_*`
+    ALONGSIDE the primary `gopred_*` metrics (which stay unfiltered) -- see approaches/README.md for why
+    the primary score is not filtered: it would shrink or empty the ranked list for many genes and
+    unfairly handicap this arm against go_llm, which always answers with up to 10 terms. This exists so
+    "how good is arm 1 when it's actually confident" is visible as a distinct, comparable number.
+
+    Returns None (and logs nothing) if there are zero significant terms for this gene -- a real and
+    informative outcome (see scripts/summarize_go_matches.py for how often that happens), but not one
+    that should be mixed into an F1 average as an uninformative 0.
+    """
+    import mlflow
+
+    filtered = [r for r in rank_p if r["go_id"] in significant_ids]
+    mlflow.log_metric("gopred_sigonly_n_significant", len(filtered))
+    if not filtered:
+        return None
+    metrics = score_ranking(truth, [r["go_id"] for r in filtered], gene_id, model)
+    mlflow.log_metrics({f"gopred_sigonly_{k}": float(v) for k, v in metrics.items()})
+    return metrics

@@ -63,6 +63,7 @@ from core.go_experiment import GOShared
 from core.go_ontology import BP_ROOT
 from core.go_scoring import CeilingModel, fit_constant_prior, score_ranking
 from core.mlflow_utils import _TRACKING_URI
+from core.run_identity import FREEZE_PATH, fingerprints, verify_freeze
 
 warnings.filterwarnings("ignore", message="Mean of empty slice")  # conditions with no valid predictions give all-NaN columns
 GENES_FILE = Path(__file__).parents[1] / "data" / "go_experiment" / "genes.tsv"
@@ -165,6 +166,7 @@ def load_runs(split: str) -> "list[dict]":
         for _, r in df.iterrows():
             rows.append({"condition": r["tags.condition"], "gene": r["tags.gene_id"], "stratum": r.get("tags.stratum"),
                          "model": r.get("params.model"), "commit": r.get("tags.git_commit"),
+                         "code_hash": r.get("tags.code_hash"), "unfrozen": str(r.get("tags.unfrozen_override")) == "True",
                          **{k[len("metrics."):]: v for k, v in r.items() if k.startswith("metrics.")}})
     return rows  # later runs overwrite earlier ones for the same (condition, gene) downstream
 
@@ -255,6 +257,8 @@ def main() -> None:
     ap.add_argument("--genes-file", default=str(GENES_FILE))
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--allow-mixed", action="store_true",
+                    help="Use runs from ANY code version (plumbing checks only — a real analysis must not mix them)")
     args = ap.parse_args()
 
     if args.eval_split == args.prior_split:
@@ -263,6 +267,37 @@ def main() -> None:
     print("Loading shared state...")
     sh = GOShared.load()
     runs = load_runs(args.eval_split)
+
+    # --- run identity: use ONE code version. Test split -> the FROZEN one; otherwise the current one. ---
+    import json as _json
+    if args.eval_split == "test" and FREEZE_PATH.exists():
+        reference, ref_label = _json.loads(FREEZE_PATH.read_text())["fingerprints"], "the FROZEN pipeline"
+    else:
+        reference, ref_label = fingerprints(), "the current code"
+    identity_notes = []
+    if args.eval_split == "test":
+        problems = verify_freeze(sh, args.genes_file)
+        identity_notes.append("**Freeze check: OK** — code, data and gene list match the freeze manifest." if not problems else
+                              "**Freeze check FAILED:** " + "; ".join(problems))
+    if not args.allow_mixed:
+        kept, dropped = [], {}
+        for r in runs:
+            approach = r["condition"].split(":")[0]
+            why = None
+            if r["code_hash"] != reference.get(approach):
+                why = f"{approach}: produced by code {r['code_hash'] or 'with no hash'} (reference {reference.get(approach)})"
+            elif r["unfrozen"] and args.eval_split == "test":
+                why = f"{approach}: started without a matching freeze (unfrozen_override)"
+            (dropped.__setitem__(why, dropped.get(why, 0) + 1) if why else kept.append(r))
+        runs = kept
+        identity_notes.append(f"Runs are restricted to {ref_label}: " + ", ".join(f"{a} `{h}`" for a, h in reference.items()) + ".")
+        for why, n in sorted(dropped.items()):
+            identity_notes.append(f"Excluded {n} runs — {why}.")
+        if not runs:
+            raise SystemExit(f"No {args.eval_split}-split runs were produced by {ref_label}. " + " ".join(identity_notes)
+                             + " (--allow-mixed uses runs from any code version, for plumbing checks only.)")
+    else:
+        identity_notes.append("**--allow-mixed: runs from any code version are included. Not a valid analysis.**")
     latest: dict[tuple[str, str], dict] = {}
     for r in runs:
         latest[(r["condition"], r["gene"])] = r
@@ -317,9 +352,7 @@ def main() -> None:
     lines = [f"# GO-prediction experiment — {args.eval_split} split, stratum `{args.stratum}`",
              f"_generated {datetime.now().isoformat(timespec='seconds')}; tracking store `{_TRACKING_URI}`_", ""]
     models = sorted({r["model"] for r in latest.values() if r.get("model") and r["model"] != "none"})
-    commits = sorted({str(r["commit"])[:8] for r in latest.values() if r.get("commit")})
-    lines += [f"Generator model(s): {', '.join(models) or 'n/a'}. Code commit(s): {', '.join(commits) or 'n/a'}. "
-              f"{'**More than one commit contributed runs — the pre-registration may be broken.**' if len(commits) > 1 else ''}", ""]
+    lines += [f"Generator model(s): {', '.join(models) or 'n/a'}.", "", "## Run identity", ""] + [f"- {n}" for n in identity_notes] + [""]
 
     # PRIMARY: free-form
     lines += ["# PRIMARY — free-form (the LLM interprets the evidence and names the gene's own GO terms)", "",

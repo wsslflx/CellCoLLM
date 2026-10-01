@@ -95,6 +95,29 @@ class GOOntology:
                     stack.append(parent)
         return frozenset(out)
 
+    @lru_cache(maxsize=None)
+    def _ancestor_depths(self, go_id: str, relations: tuple[str, ...]) -> dict[str, int]:
+        """BFS (not DFS) so the depth recorded for each ancestor is the SHORTEST path, since a DAG can
+        reach the same ancestor via paths of different length. go_id itself is depth 0."""
+        depth = {go_id: 0}
+        frontier = [go_id]
+        while frontier:
+            nxt = []
+            for cur in frontier:
+                for _, parent, rel in self._g.out_edges(cur, keys=True):
+                    if rel in relations and parent not in depth:
+                        depth[parent] = depth[cur] + 1
+                        nxt.append(parent)
+            frontier = nxt
+        return depth
+
+    def ancestor_depths(self, go_id: str, relations: tuple[str, ...] = PROPAGATION_RELATIONS) -> dict[str, int]:
+        """{ancestor_id: shortest number of is_a/part_of edges from go_id up to it}; go_id itself -> 0.
+        Used to classify a predicted term against a true term as exact / generalization / specialization:
+        see core/go_match.py."""
+        pid = self.resolve(go_id)
+        return dict(self._ancestor_depths(pid, tuple(relations))) if pid else {}
+
     def ancestors(self, go_id: str, relations: tuple[str, ...] = PROPAGATION_RELATIONS) -> set[str]:
         """All ancestors of go_id along `relations`, INCLUDING go_id itself."""
         pid = self.resolve(go_id)
@@ -231,3 +254,41 @@ def load_gene_annotations(
                 ann[g].add(pid)
             stats["kept"] += 1
     return dict(ann), dict(stats)
+
+
+def load_gene_annotation_evidence(
+    ontology: GOOntology, gaf_path: str | Path = GAF_PATH, hgnc_path: str | Path = HGNC_PATH,
+    excluded_evidence: frozenset[str] | set[str] = DEFAULT_EXCLUDED_EVIDENCE,
+) -> dict[tuple[str, str], frozenset[str]]:
+    """
+    {(gene_id, go_id): evidence codes seen for that exact pair in GOA}.
+
+    `load_gene_annotations` builds the per-gene SET of true terms but discards which evidence code
+    supports which specific term, so there is no way afterwards to ask "was THIS matched term backed by
+    experimental evidence (IDA/IMP/...) or an inferred one (IBA/ISS/TAS/...)?". This is a sibling, not a
+    replacement: same GAF pass, same filters (aspect/qualifier/evidence/resolvability), purely additive —
+    `load_gene_annotations` and its callers are unchanged.
+    """
+    ens_to_uni = load_ensembl_to_uniprot(hgnc_path)
+    uni_to_ens: dict[str, set[str]] = defaultdict(set)
+    for ens, unis in ens_to_uni.items():
+        for u in unis:
+            uni_to_ens[u].add(ens)
+
+    evidence: dict[tuple[str, str], set[str]] = defaultdict(set)
+    with gzip.open(gaf_path, "rt") as f:
+        for line in f:
+            if line.startswith("!"):
+                continue
+            c = line.rstrip("\n").split("\t")
+            if c[8] != "P" or "NOT" in c[3] or c[6] in excluded_evidence:
+                continue
+            genes = uni_to_ens.get(c[1])
+            if not genes:
+                continue
+            pid = ontology.resolve(c[4])
+            if not pid or not ontology.is_bp(pid):
+                continue
+            for g in genes:
+                evidence[(g, pid)].add(c[6])
+    return {k: frozenset(v) for k, v in evidence.items()}
