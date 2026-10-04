@@ -217,7 +217,7 @@ ax.bar([i + w / 2 for i in x], dist["downward"], width=w, color=COLORS["downward
 ax.set_xticks(list(x)); ax.set_xticklabels(dist.index)
 ax.set_xlabel("distance in GO-graph edges between prediction and truth (d=1 is the closest possible non-exact match)")
 ax.set_ylabel("number of predictions")
-ax.set_title("Distance of the real (non-exact) matches -- most are not close ones")
+ax.set_title("Distance of the real (non-exact) matches")
 ax.legend()
 fig.tight_layout()
 save(fig, "03_match_distance")
@@ -286,21 +286,41 @@ plt.show()
 md(r"""
 ## Part 1 summary
 
-- Arm 1 (no LLM) is a faithful reimplementation of an established method (g:Profiler's approach), run
-  across the full, ~15,900-gene scoreable dataset.
-- **94% of its significant predictions do not match the gene's own known GO annotation**, and only 7.7% of
-  genes get even one real match.
-- The handful of real hits are biologically sound (e.g. GNAT1 → visual perception, CSF1R → macrophage
-  differentiation) -- the method is not producing noise, it is producing correct answers for a narrow slice
-  of genes.
-- Plot 5 shows this tracks a **known, pre-existing structural limit**: genes with a higher achievable
-  ceiling (given this specific 52-term GO vocabulary) are more likely to get a real match. The low match
-  rate is therefore explained, not arbitrary -- see `approaches/README.md` for the full derivation of the
-  ceiling analysis and the vocabulary's limitations.
+Each bullet gives what the plot shows and what it means for the project. Arm 1 is the no-LLM baseline that the
+LLM arm (arm 2) has to be compared against, so "means for us" is mostly about how to read and use this baseline.
+Data: 15,754 scoreable genes, 26,779 significant predictions.
 
-Part 2 below digs into *which* genes and terms account for that 7.7%, and whether the pattern is
-biologically meaningful or an artifact of something else (annotation volume, batch effects, a handful of
-gene families).
+- **Plot 1, funnel.** 63.3% of genes get at least one significant GO term, 7.7% (1,220) get at least one real
+  match and 1.2% (188) an exact one; 36.7% get no output at all.
+  *For us:* the baseline is weak: it is right for fewer than 1 in 12 genes. It also abstains on over a third of
+  genes, while an LLM always answers. Comparing the arms on all genes mixes "wrong" with "silent", so we should
+  report results both over all genes and over the genes where each method produced something.
+- **Plot 2, outcome breakdown.** Of the 26,779 significant predictions, 93.9% are `no_match`, 3.0% upward, 2.4%
+  downward, 0.7% exact.
+  *For us:* "statistically significant" does not mean "correct" here. About 6.1% of significant terms are a
+  match, against 3.5% expected from picking at random (Plot 16). That 6.1% is the number the LLM arm has to beat
+  on the same scoring.
+- **Plot 3, distance of the matches.** Among the 1,439 non-exact matches, upward matches are mostly close (56%
+  within 2 GO edges) and downward ones a bit further out (most at 3 edges); none is more than 10 away.
+  *For us:* our match rule (any ancestor or descendant counts) is not being carried by very loose relations, so we
+  do not need a distance cut-off to keep it honest. A stricter variant (matches within 2 edges) is cheap to report
+  alongside, and edges are coarse, so Plot 15 is the better view of how far off a match is.
+- **Plot 4, significant terms per gene.** The median gene gets 1 significant term (mean 1.7, maximum 14).
+  *For us:* the baseline's output is very short, so per-gene scores for it are noisy and top-k comparisons barely
+  apply. Arm 2 can list up to 10 terms; a fair comparison should hold the number of predictions fixed (for
+  example the top 3) or use a metric that accounts for list length, otherwise the longer list wins by volume.
+- **Plot 5, ceiling against match.** Genes that got a match have a higher oracle ceiling (median 0.21) than genes
+  that did not (0.12).
+  *For us:* the cap on performance comes from the 52-term cell-level vocabulary and the evidence, not from the
+  statistical method, so it applies to the LLM arm as well. Arm 2 should be judged against each gene's ceiling,
+  not against a perfect score, and a low absolute score for either arm is partly a property of the setup.
+
+Overall: arm 1 is a faithful reimplementation of g:Profiler's approach and 94% of its significant predictions do
+not match the gene's known annotation. The hits it does make are biologically sound (GNAT1 to visual perception,
+CSF1R to macrophage differentiation), so it is a correct but narrow baseline, not noise.
+
+Part 2 below looks at which genes and terms account for the 7.7%, and whether that pattern is meaningful or an
+artifact of something else.
 """)
 
 # ===============================================================================================
@@ -587,41 +607,700 @@ plt.show()
 
 # ---------------------------------------------------------------------------------------------
 md(r"""
+## 15. Among the real matches, how far off are they in specificity (not just graph steps)?
+
+Plot 3 showed how far a match is in GO-graph EDGES. That treats every edge as equal, but the graph is
+uneven -- one edge can separate two near-synonyms, or a very general term from a very specific one. This
+plot asks the same "how close?" question in information content (IC) instead: IC = -ln(fraction of genes
+carrying the term), so a MORE SPECIFIC/rarer term has a HIGHER IC.
+
+For every real match, this is `IC_true - IC_predicted` (signed):
+- **upward** matches are necessarily positive -- the model predicted an ancestor of the true term, and an
+  ancestor can never be more specific than its descendant, so the true term's IC is always >= the
+  prediction's. The size of the gap is what matters: a small positive gap is a near-miss (predicted the
+  true term's immediate parent); a large one means the model landed on something much more generic than
+  the real answer.
+- **downward** matches are necessarily negative, for the mirrored reason -- the model over-specialised.
+- **exact** matches are left out: their gap is 0 by construction (the true term IS the predicted term), so
+  there is no spread to show.
+""")
+
+code(r"""
+# ic_gap is only defined for real matches (exact/upward/downward), not no_match -- see
+# scripts/analyze_arm1_gene_properties.py. `wins` already excludes no_match.
+gap_order = [k for k in ORDER if k not in ("exact", "no_match")]
+data = [wins.loc[wins["kind"] == k, "ic_gap"] for k in gap_order]
+
+fig, ax = plt.subplots(figsize=(8, 4.5))
+bp = ax.boxplot(data, tick_labels=gap_order, patch_artist=True, showfliers=True)
+for patch, k in zip(bp["boxes"], gap_order):
+    patch.set_facecolor(COLORS[k])
+ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+ax.set_ylabel("IC gap  =  IC(true term) - IC(predicted term)\n(0 = equally specific; + = prediction too general; - = prediction too specific)")
+ax.set_title("How far off in specificity are the real matches, beyond graph distance?")
+fig.tight_layout()
+save(fig, "15_ic_gap_by_outcome")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 16. Would a random guess have matched just as often? (chance baseline)
+
+Concern: a `downward` match only needs the prediction to be ANY descendant of one of the gene's true terms.
+If a gene's true terms are very general (low IC, e.g. "cell differentiation"), many of the 52 candidate
+terms are descendants of them, so almost any guess would match. This plot checks that directly.
+
+**Chance baseline**: for each gene, the fraction of the 52 candidate terms that would count as a match
+(exact / upward / downward) given that gene's true terms. A gene that produced `n` significant predictions
+would, by picking `n` of the 52 at random, be expected to get `n x (that fraction)` matches. Summed over
+genes, this is the number of matches random picking would give.
+
+- **Left**: observed matches vs. the random-pick expectation, per match kind. Observed above expected means
+  the method does better than chance; observed close to expected means that kind of match is largely
+  explained by easy targets.
+- **Right**: the same comparison as a match rate, by how general the gene's true terms are (quintiles of the
+  mean IC of the gene's direct true terms; leftmost = most general).
+""")
+
+code(r"""
+chance = pd.DataFrame(json.loads((RESULTS_DIR / "arm1_chance_baseline__all.json").read_text()))
+w = chance[chance["n_significant"] > 0].copy()
+
+kinds = ["exact", "upward", "downward"]
+obs = [w[f"n_{k}"].sum() for k in kinds]
+exp = [(w["n_significant"] * w[f"chance_{k}"]).sum() for k in kinds]
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
+x = range(len(kinds)); bw = 0.38
+ax1.bar([i - bw / 2 for i in x], obs, width=bw, color=[COLORS[k] for k in kinds], label="observed (arm 1)")
+ax1.bar([i + bw / 2 for i in x], exp, width=bw, color="white", edgecolor=[COLORS[k] for k in kinds],
+        hatch="//", label="expected from random picking")
+for i, (o, e) in enumerate(zip(obs, exp)):
+    ax1.text(i, max(o, e) * 1.02, f"{o / e:.1f}x", ha="center", fontsize=10)
+ax1.set_xticks(list(x)); ax1.set_xticklabels(kinds)
+ax1.set_ylabel("number of matching predictions")
+ax1.set_title("Observed vs. chance (label = observed / expected)")
+ax1.set_ylim(0, max(obs + exp) * 1.3)
+ax1.legend(loc="upper right")
+
+w["ic_bin"] = pd.qcut(w["mean_true_ic"], 5)
+g = w.groupby("ic_bin", observed=True)
+obs_rate = g.apply(lambda d: (d[["n_exact", "n_upward", "n_downward"]].sum().sum()) / d["n_significant"].sum(), include_groups=False)
+exp_rate = g.apply(lambda d: (d["n_significant"] * d["chance"]).sum() / d["n_significant"].sum(), include_groups=False)
+labels = [f"{iv.left:.1f}-{iv.right:.1f}" for iv in obs_rate.index]
+xx = range(len(labels))
+ax2.bar([i - bw / 2 for i in xx], obs_rate.values, width=bw, color=COLORS["exact"], label="observed match rate")
+ax2.bar([i + bw / 2 for i in xx], exp_rate.values, width=bw, color="white", edgecolor=COLORS["exact"],
+        hatch="//", label="expected from random picking")
+ax2.set_xticks(list(xx)); ax2.set_xticklabels(labels)
+ax2.set_xlabel("mean IC of the gene's true terms (low = general terms only)")
+ax2.set_ylabel("share of significant predictions that match")
+ax2.set_title("Match rate vs. chance, by generality of the gene's true terms")
+ax2.set_ylim(0, obs_rate.max() * 1.35)
+ax2.legend(loc="upper right")
+fig.tight_layout()
+save(fig, "16_chance_baseline")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
 ## Part 2 summary
 
-- **Expression breadth is the strongest single predictor** (Plot 6): match rate falls from ~15% for
-  genes expressed in under 20% of cell types to under 1% for genes expressed in over 90% -- roughly a
-  17x difference, in the direction expression-breadth theory predicts.
-- **Matches are not cheap, generic hits** (Plots 7, 9): exact matches have moderate-to-high specificity
-  (median IC ~4.8) and skew toward *smaller*, more specific terms (median K~12) than `no_match` terms
-  (median K~29, IC~5.3 -- about as specific, just wrong). The method is not winning by picking large,
-  easy, low-power terms.
-- **Annotation richness inflates the raw count, but not the per-opportunity rate** (Plot 8): raw match
-  rate rises from 4% to 21% with more known true terms, exactly as the "more targets, more chances"
-  confound predicts -- but the *normalized* rate (matches per true term available) actually falls, from
-  0.041 to 0.009. Sparsely-annotated genes are not being short-changed; if anything each of their few
-  true terms is more likely to land a hit.
-- **Arm 1's own confidence ranking carries no useful signal** (Plot 10): the single most significant
-  prediction is correct only 5.6% of the time, *less* often than the 3rd-or-later one (6.6%). A user
-  reading only the top hit per gene would do no better -- slightly worse -- than reading further down
-  the list.
-- **The wins are heavily concentrated** (Plots 11, 13): 15 of the 52 candidate terms account for 88% of
-  every real match, and the single HGNC family "CD molecules" alone outweighs any other family, with
-  immune-related families (3 immunoglobulin loci, chemokines, MHC, interleukins) dominating the rest.
-  "7.7% of genes get a match" over-states how broadly this generalizes -- it is close to "most of a few
-  already-well-annotated, mostly-immune gene families."
-- **Matches are not a batch artifact** (Plot 12): matched genes have *lower* tissue batch-signature
-  exposure (median 0.27) than unmatched genes (median 0.50) -- reassuring, but also means batch effects
-  are not the explanation for why the match rate is so low overall.
-- **Most wins rest on inferred, not directly measured, evidence** (Plot 14): 72% of matched truth terms
-  are backed only by non-experimental GOA evidence (phylogeny, sequence similarity, author statement);
-  28% have direct experimental support. The GNAT1/CSF1R examples highlighted in Part 1 are the stronger
-  end of this distribution, not the typical case.
+Each bullet gives what the plot shows and what it means for the project.
 
-**Taken together:** arm 1 works best for narrowly-expressed genes in a handful of well-annotated,
-largely-immune gene families, producing specific (not generic) predictions when it does hit -- but it
-cannot tell you, from its own output, which of its predictions to trust, and most of its successes rest on
-inferred rather than directly measured biology.
+- **Plot 6, expression breadth.** Match rate falls from about 15% for genes expressed in under 20% of cell types
+  to under 1% above 90%, roughly 17x.
+  *For us:* arm 1 only works for narrowly expressed genes, and the median gene is expressed in 67% of cell types,
+  so it fails on most of the dataset. The useful question for the LLM arm is whether it adds anything on broad
+  genes, where the baseline has nothing. Results for both arms should be split by breadth, not pooled.
+- **Plot 7, specificity of predictions (IC).** Exact matches have moderate-to-high specificity (median IC about
+  4.8); `no_match` terms are about as specific (about 5.3).
+  *For us:* the baseline's few wins are not generic terms, so it is not trivially winning. Specificity of a
+  prediction does not by itself tell right from wrong, so it is not a useful filter either.
+- **Plot 8, annotation richness.** The raw match rate rises from 4% to 21% with more known true terms, but the
+  rate per available true term falls from 0.041 to 0.009.
+  *For us:* well-studied genes do get more matches in raw counts, but not because each of their terms is easier,
+  so annotation bias is not what drives the result. Raw match counts still depend on how many true terms a gene
+  has, so scores should be normalized (for example against the ceiling) before comparing genes or arms.
+- **Plot 9, term size (K).** Exact matches use smaller terms (median K about 12) than `no_match` terms (about 29).
+  *For us:* the baseline does not win by picking large, easy, high-power terms. This keeps the baseline from
+  being dismissed as a size artifact, which makes it a harder baseline to beat.
+- **Plot 10, calibration by rank.** The most significant prediction is correct 5.6% of the time, the third or
+  later one 6.6%.
+  *For us:* arm 1's ordering carries no information, so rank-based scores for arm 1 are no better than set-based
+  ones and its significance order cannot be used as a confidence. A confidence that actually separates right from
+  wrong would be a real advantage for arm 2, so its confidence values should be tested the same way.
+- **Plot 11, which vocabulary terms win.** 15 of the 52 candidate terms account for 88% of the real matches.
+  *For us:* the baseline's success rests on a small part of the vocabulary, so a headline match rate hides how
+  narrow it is. Per-term results should be reported next to the overall rate.
+- **Plot 12, batch/tissue artifact.** Matched genes have lower batch-signature exposure (median 0.27) than
+  unmatched ones (0.50).
+  *For us:* the matches are not a study or batch artifact, so they can be trusted as expression signal. It also
+  means batch effects do not explain the low match rate overall.
+- **Plot 13, gene families.** "CD molecules" outweighs any other family among matched genes, and immune families
+  dominate the rest.
+  *For us:* the 7.7% is close to "a few well-annotated immune families". If we only report an overall rate, a
+  method that is good at immune genes looks good everywhere. Both arms should be evaluated with and without
+  immune families to see whether anything generalizes.
+- **Plot 14, evidence strength.** 72% of the matched true terms rest only on non-experimental evidence (inferred
+  from sequence, phylogeny or author statements); 28% on direct experiments.
+  *For us:* our ground truth is itself partly computational, so some "correct" answers are inferences about similar
+  genes. A sensitivity check that scores against experimental evidence only would show how much of any result
+  depends on that.
+- **Plot 15, specificity gap of the matches.** For non-exact matches, IC(true) minus IC(predicted). Upward matches
+  are too general by a median of 1.66 IC units (about 5x rarer true term), downward matches too specific by 3.82
+  (about 46x). Exact matches are left out (gap 0 by definition).
+  *For us:* a match is usually right in direction but at the wrong level of detail, and downward matches miss by
+  much more because the 52 candidates are narrow while many true terms are general. A yes/no match overstates
+  quality, so the IC-weighted score already in `core/go_scoring.py` should stay the primary measure, and the
+  prompt for arm 2 should address granularity.
+- **Plot 16, chance baseline.** Random picking among the 52 candidates would give 934 matches against the 1,636
+  observed (1.75x): exact 3.0x, upward 2.3x, downward 1.2x (644 vs 520).
+  *For us:* about 80% of downward matches are easy targets and should not be counted as wins, or at least be
+  reported separately. Only exact and upward matches are clearly above chance. The same chance baseline should be
+  computed for arm 2 so that both arms are compared against the same reference.
+
+**Taken together:** arm 1 is a narrow baseline: it works for narrowly expressed genes in a few immune families,
+its exact and upward hits are above chance, and its downward hits mostly are not. For arm 2 this means three
+things: stratify by breadth and gene family, count matches against the chance baseline, and judge confidence and
+granularity, not just the match rate.
+""")
+
+# =============================================================================================
+# PART 3 -- the 52 candidate terms as the unit (added after the Part 2 summary)
+# =============================================================================================
+md(r"""
+# Part 3 — the terms themselves: which GO terms does arm 1 assign, and why those?
+
+Parts 1–2 asked which *genes* work. Part 3 flips the unit: the 52 candidate GO terms (every term arm 1 may
+assign). A few of them are assigned thousands of times, so the questions here are: how often does each term
+occur among the cell types that define it, is it assigned more or less often than that predicts, how often is it
+actually right, and are some terms close to duplicates of each other?
+
+**One caution on a number from earlier discussion.** `term_size` stored per run is the number of cell types
+carrying the term *inside that gene's called universe*, so it changes from gene to gene. Everything below that
+says "how often the term occurs among the cell types" instead uses the fixed, gene-independent count of annotated
+cell types carrying the term (`K_ct`, taken from the term-to-cell-type incidence matrix). Any figure quoted
+earlier from per-run `term_size` should be disregarded in favour of the values printed here.
+""")
+
+code(r"""
+import numpy as np
+
+prof = json.loads((RESULTS_DIR / "arm1_term_profile__all.json").read_text())
+pairs = json.loads((RESULTS_DIR / "arm1_term_pairs__all.json").read_text())
+ps = prof["summary"]
+tp3 = pd.DataFrame(prof["rows"])
+assert tp3["assigned"].sum() == len(term_props), "term-level assignment total does not match Part 2's table"
+
+# Terms shown in the labelled plots: assigned to at least this many genes (stated on every such plot).
+MIN_ASSIGNED = 100
+big = tp3[tp3["assigned"] >= MIN_ASSIGNED].sort_values("assigned", ascending=False).reset_index(drop=True)
+short = lambda s, n=44: s if len(s) <= n else s[: n - 1] + "…"
+
+print(f"candidate terms: {len(tp3)}   annotated cell types: {ps['n_annotated_cell_types']}   "
+      f"annotated CL|UBERON rows: {ps['n_annotated_rows']}")
+print(f"terms never assigned: {(tp3['assigned'] == 0).sum()}   terms assigned >= {MIN_ASSIGNED} times (shown below): {len(big)}")
+print(f"Spearman(times assigned, fixed carrier-cell-type count):  all 52 terms {ps['spearman_assigned_vs_K_ct_all_terms']:.2f}, "
+      f"assigned terms only {ps['spearman_assigned_vs_K_ct_assigned_terms']:.2f}")
+print(f"Spearman(precision, carrier-cell-type count), terms with >= {MIN_ASSIGNED} assignments:  "
+      f"{ps['spearman_precision_vs_K_ct_terms_assigned_ge_100']:.2f}")
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 17. Is a term assigned often simply because many cell types carry it?
+
+- **Left**: each dot is one candidate term. x = the share of annotated cell types that carry the term
+  (`K_ct / number of annotated cell types`), y = in how many genes arm 1 assigned it. Linear axes on purpose:
+  a log scale would flatten exactly the spread this plot needs to show. The three terms never assigned sit on the
+  x axis.
+- **Right**: the most-assigned terms with the share of cell types carrying each, so the two quantities can be
+  read off side by side.
+
+Spearman's ρ is a rank correlation (1 = the term with more carrier cell types is always the one assigned more).
+""")
+
+code(r"""
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.5), gridspec_kw={"width_ratios": [1.1, 1]})
+x = tp3["frac_ct"] * 100
+ax1.scatter(x, tp3["assigned"], s=40, color=COLORS["volume"], edgecolor="white", linewidth=0.6, zorder=3)
+offsets = [(5, 4), (5, 6), (5, -12), (5, 4), (5, 4), (5, 4), (5, 4), (5, 4)]  # T cell / ameboidal dots sit close together
+for (_, r), off in zip(tp3.nlargest(8, "assigned").iterrows(), offsets):
+    ax1.annotate(short(r["label"], 28), (r["frac_ct"] * 100, r["assigned"]), xytext=off, textcoords="offset points", fontsize=8)
+ax1.set_xlabel("share of annotated cell types that carry the term (%)")
+ax1.set_ylabel("number of genes the term was assigned to")
+ax1.set_title(f"Assigned count vs. cell-type frequency (Spearman ρ = {ps['spearman_assigned_vs_K_ct_all_terms']:.2f}, all 52 terms)")
+
+top = big.head(15)[::-1]
+bars = ax2.barh([short(l, 40) for l in top["label"]], top["assigned"], color=COLORS["volume"])
+for bar, (_, r) in zip(bars, top.iterrows()):
+    ax2.text(bar.get_width() + big["assigned"].max() * 0.01, bar.get_y() + bar.get_height() / 2,
+             f"{r['assigned']:,}  ({r['frac_ct']*100:.1f}% of cell types)", va="center", fontsize=8)
+ax2.set_xlim(0, big["assigned"].max() * 1.5)
+ax2.set_xlabel("number of genes the term was assigned to")
+ax2.set_title("Most-assigned terms, with their cell-type frequency")
+fig.tight_layout()
+save(fig, "17_assigned_vs_celltype_frequency")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 18. When a term is assigned, how often is it right — compared with how often it *would* be right by chance?
+
+For each frequently assigned term (≥ 100 genes): the bar is its **precision**, the share of its assignments that
+are a real match, split by match kind with the same colours as Part 1. The black diamond is the term's **base
+rate**: the share of *all* genes for which this term would count as a match (exact, upward or downward) if it were
+assigned. Precision to the right of the diamond means the term is right more often than assigning it blindly
+would be; to the left means worse than blind. Terms that are descendants of very general true terms have high base
+rates, which is the easy-target effect from Plot 16, now per term.
+""")
+
+code(r"""
+d = big[::-1].reset_index(drop=True)
+fig, ax = plt.subplots(figsize=(11, 0.34 * len(d) + 2.2))
+left = np.zeros(len(d))
+for k in ["exact", "upward", "downward"]:
+    vals = (d[f"n_{k}"] / d["assigned"]).to_numpy()
+    ax.barh(range(len(d)), vals, left=left, color=COLORS[k], label=k)
+    left += vals
+ax.scatter(d["base_match_rate"], range(len(d)), marker="D", color="black", s=28, zorder=5, label="base rate (match share if assigned blindly)")
+for i, r in d.iterrows():
+    lift = r["lift"]
+    ax.text(max(r["precision"], r["base_match_rate"]) + 0.004, i, f"{r['assigned']:,} assigned" + (f"   lift {lift:.1f}x" if lift else ""), va="center", fontsize=8)
+ax.set_yticks(range(len(d))); ax.set_yticklabels([short(l, 46) for l in d["label"]], fontsize=8)
+ax.set_xlabel(f"share of the term's assignments that are a real match  (terms assigned >= {MIN_ASSIGNED} times)")
+ax.set_xlim(0, max(d["precision"].max(), d["base_match_rate"].max()) * 1.55)
+ax.set_title("Per-term precision against the term's own base rate")
+ax.legend(loc="lower right", fontsize=8)
+fig.tight_layout()
+save(fig, "18_term_precision_vs_base_rate")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 19. Do the terms just label one tissue?
+
+For each term: among the CL|UBERON rows that carry it, the share belonging to its single largest tissue (bar,
+labelled with the tissue). A high share means the term mostly identifies one tissue's cell types, so assigning it
+may reflect "this gene is expressed in tissue X" rather than anything about the process. The black marker is that
+same tissue's share of ALL annotated rows, i.e. what you would see if the term's carriers were spread without any
+tissue preference; a bar far above its marker is real concentration, not just a large tissue.
+""")
+
+code(r"""
+d = big.sort_values("top_tissue_share").reset_index(drop=True)
+fig, ax = plt.subplots(figsize=(11, 0.34 * len(d) + 2.2))
+ax.barh(range(len(d)), d["top_tissue_share"], color=COLORS["volume"])
+ax.scatter(d["top_tissue_share_of_all_rows"], range(len(d)), marker="|", color="black", s=160, zorder=5, label="same tissue's share of ALL annotated rows")
+for i, r in d.iterrows():
+    ax.text(max(r["top_tissue_share"], r["top_tissue_share_of_all_rows"]) + 0.015, i,
+            f"{r['top_tissue']}  ({r['n_tissues']} tissue{'s' if r['n_tissues'] != 1 else ''})", va="center", fontsize=8)
+ax.set_yticks(range(len(d))); ax.set_yticklabels([short(l, 46) for l in d["label"]], fontsize=8)
+ax.set_xlim(0, 1.45); ax.set_xlabel("share of the term's carrier rows that sit in its largest tissue")
+ax.set_title("Tissue concentration of each term's carrier cell types")
+ax.legend(loc="lower right", fontsize=8)
+fig.tight_layout()
+save(fig, "19_tissue_purity")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 20. Are some terms near-duplicates of each other?
+
+Two heat maps over the same terms in the same order (clustered on the left map). **Jaccard** similarity is
+|A ∩ B| / |A ∪ B| (0 = nothing shared, 1 = identical sets).
+- **Left**: how similar the sets of genes are that each pair of terms was assigned to.
+- **Right**: how similar the sets of cell types are that carry each pair of terms.
+A dot marks pairs where one term is an ancestor or descendant of the other in the GO graph. Terms that light up in
+both maps (and are GO-related) are close to the same signal counted more than once, which shrinks the effective
+number of independent predictions.
+""")
+
+code(r"""
+from scipy.cluster.hierarchy import linkage, leaves_list
+from scipy.spatial.distance import squareform
+
+term_ids = pairs["terms"]
+sel = [term_ids.index(t) for t in big["go_id"]]
+Jg = np.array(pairs["jaccard_assigned_genes"])[np.ix_(sel, sel)]
+Jc = np.array(pairs["jaccard_carrier_cell_types"])[np.ix_(sel, sel)]
+Rel = np.array(pairs["ontology_related"])[np.ix_(sel, sel)]
+order = leaves_list(linkage(squareform(1 - Jg, checks=False), method="average"))
+names = [short(big["label"].iloc[i], 34) for i in order]
+
+fig, axes = plt.subplots(1, 2, figsize=(15, 7.6), sharey=True)
+for ax, M, title in [(axes[0], Jg, "genes the pair was assigned to"), (axes[1], Jc, "cell types carrying the pair")]:
+    im = ax.imshow(M[np.ix_(order, order)], cmap="Blues", vmin=0, vmax=1)
+    ax.grid(False)
+    ys, xs = np.where(Rel[np.ix_(order, order)] == 1)
+    ax.scatter(xs, ys, s=10, color="black", marker=".")
+    ax.set_xticks(range(len(names))); ax.set_xticklabels(names, rotation=90, fontsize=7)
+    ax.set_title(f"Jaccard overlap of the {title}")
+axes[0].set_yticks(range(len(names))); axes[0].set_yticklabels(names, fontsize=7)
+fig.colorbar(im, ax=axes, shrink=0.6, label="Jaccard similarity")
+save(fig, "20_term_redundancy")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 21. Can every term even reach significance? (reachability)
+
+For a gene with `n` expressing cell types in a background of `N`, and a term carried by `K` of them, the most
+extreme overlap the hypergeometric test can see is `min(K, n)`; its p-value is the **floor** for that
+(gene, term). If even the floor is above the g:SCS threshold, the term cannot be reported for that gene no matter
+what the biology is. Here, per term: the share of genes for which it *can* reach significance (x) against how
+often it was assigned (y). Terms far left are structurally handicapped; the grey markers are terms never assigned.
+""")
+
+code(r"""
+fig, ax = plt.subplots(figsize=(8.5, 5.5))
+never = tp3["assigned"] == 0
+ax.scatter(tp3.loc[~never, "frac_reachable"] * 100, tp3.loc[~never, "assigned"], s=40, color=COLORS["volume"], edgecolor="white", zorder=3, label="assigned at least once")
+ax.scatter(tp3.loc[never, "frac_reachable"] * 100, tp3.loc[never, "assigned"], s=60, color=COLORS["no_match"], edgecolor="black", zorder=4, label="never assigned")
+for (_, r), off in zip(tp3.nlargest(5, "assigned").iterrows(), [(5, 4), (-95, 7), (5, -12), (5, 4), (-60, 6)]):
+    ax.annotate(short(r["label"], 30), (r["frac_reachable"] * 100, r["assigned"]), xytext=off, textcoords="offset points", fontsize=8)
+ax.text(0.98, 0.04, "never assigned (grey):\n" + "\n".join("  " + l for l in tp3.loc[never, "label"]),
+        transform=ax.transAxes, ha="right", va="bottom", fontsize=8, bbox=dict(boxstyle="round", facecolor="white", edgecolor="#cccccc"))
+ax.set_xlabel("share of genes for which the term can reach significance at all (%)")
+ax.set_ylabel("number of genes the term was assigned to")
+ax.set_title("Structural reachability vs. how often a term is assigned")
+ax.legend()
+fig.tight_layout()
+save(fig, "21_reachability")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 22. What kind of genes is each term assigned to?
+
+- **Left**: for each frequently assigned term, the median expression breadth of the genes it was assigned to
+  (breadth = share of cell types expressing the gene), against the median over all genes (vertical line). A term
+  far to the left is mostly assigned to narrowly expressed genes; at the line, it is assigned to genes of
+  ordinary breadth.
+- **Right**: the single most common HGNC gene family among the genes the term was assigned to: its share of the
+  term's genes, and how many times over-represented that is compared with its share among all genes (`enrichment`).
+""")
+
+code(r"""
+d = big.sort_values("assigned").reset_index(drop=True)
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 0.34 * len(d) + 2.4), sharey=True)
+ax1.scatter(d["median_breadth_assigned"] * 100, range(len(d)), color=COLORS["volume"], s=36, zorder=3)
+ax1.axvline(ps["median_breadth_all_genes"] * 100, color="black", linestyle="--", linewidth=1, label="median over all genes")
+ax1.set_yticks(range(len(d))); ax1.set_yticklabels([short(l, 46) for l in d["label"]], fontsize=8)
+ax1.set_xlabel("median breadth of assigned genes (% of cell types)")
+ax1.set_xlim(0, None); ax1.legend(loc="lower right", fontsize=8)
+ax1.set_title("Expression breadth of assigned genes")
+
+shares = [(r["top_families"][0] if r["top_families"] else None) for _, r in d.iterrows()]
+ax2.barh(range(len(d)), [s["share_among_assigned"] if s else 0 for s in shares], color=COLORS["volume"])
+for i, s in enumerate(shares):
+    if s:
+        ax2.text(s["share_among_assigned"] + 0.005, i, f"{short(s['family'], 34)}  ({s['enrichment']:.1f}x over-represented)", va="center", fontsize=7.5)
+ax2.set_xlim(0, max([s["share_among_assigned"] for s in shares if s]) * 2.6)
+ax2.set_xlabel("share of assigned genes in the most common family")
+ax2.set_title("Dominant gene family per term")
+fig.tight_layout()
+save(fig, "22_gene_profile_per_term")
+plt.show()
+""")
+
+
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## Part 3 summary
+
+Each bullet gives what the plot shows and what it means for the project (358 annotated cell types, 1,469
+annotated CL|UBERON rows).
+
+- **Plot 17, assigned count against cell-type frequency.** Terms carried by more cell types are assigned more
+  often (Spearman ρ = 0.80 across 52 terms; 0.76 among the 49 ever assigned). This replaces an earlier chat figure
+  that used the per-gene `term_size`.
+  *For us:* what arm 1 outputs is driven largely by how many cell types a term has, which is a property of the
+  vocabulary and the test, not of the gene. The distribution of assigned terms is a fingerprint we can compare
+  with arm 2: if the LLM's output follows the same size pattern, it is mostly echoing the statistics.
+- **Plot 18, precision against base rate.** The five most-assigned terms make up 56% of all assignments and only
+  4.7% of those match. Ameboidal-type cell migration, phagocytosis and cell differentiation are right about as
+  often as blind assignment (lift 1.0x, 1.2x, 0.9x); type II interferon production, assigned to 193 genes, never
+  matched. Precision is negatively related to carrier count (ρ = -0.32).
+  *For us:* the terms arm 1 uses most are the least informative, so its overall match rate is pulled down by a few
+  frequent terms and a per-term view is more honest than one number. For arm 2, a high share of the same
+  frequent terms in its output would be a warning sign.
+- **Plot 19, tissue concentration.** Four terms sit entirely in one tissue (liver or testis), visual perception
+  is 95% eye, and the three most-assigned terms spread over 36-45 tissues. More tissue-concentrated terms have
+  higher lift (ρ = 0.58 over 30 terms); the best are fertilization (22x), bile acid biosynthetic process (13x),
+  spermatogenesis (12x) and B cell mediated immunity (11x).
+  *For us:* the best-performing terms may be tissue detectors, not process detectors: finding testis-specific
+  expression gives "spermatogenesis" without any insight into the process. Good scores on these terms are weaker
+  evidence than they look, so results should be checked with those terms removed.
+- **Plot 20, term redundancy.** Detoxification with bile acid biosynthetic process, the trio reproductive process
+  / spermatogenesis / fertilization, and the trio macrophage / osteoclast / myeloid dendritic cell
+  differentiation overlap almost completely, in both the genes they were assigned to and the cell types that carry
+  them. The two overlap maps have nearly the same structure.
+  *For us:* the 52 terms are fewer independent predictions than they seem, and gene-to-term assignment follows
+  which cell types terms share. Counting matches per term double-counts the same signal, so gene-level scores
+  (did the gene get any match) or terms grouped into clusters are safer for comparing arms.
+- **Plot 21, reachability.** The share of genes for which a term can reach significance at all runs from 1.8% to
+  99.1% and goes with how often it is assigned (ρ = 0.85). The three terms never assigned (mucosal immune
+  response, type I interferon production, surfactant homeostasis) can reach significance for about 2% of genes.
+  *For us:* part of the vocabulary is out of reach for the statistical test regardless of biology, which the LLM
+  is not bound by. If arm 2 uses those terms, that is something the baseline cannot do, and the vocabulary's
+  minimum term size is a design choice worth revisiting.
+- **Plot 22, kind of genes per term.** The median breadth of assigned genes runs from under 1% (reproductive
+  process, spermatogenesis, fertilization) to 88% (cell differentiation), against 67% for all genes. In 16 of 30
+  frequent terms the dominant family is "CD molecules", usually several times over-represented.
+  *For us:* terms act as proxies for gene types: narrow tissue-specific genes, or immune families. A term showing
+  up for a gene may tell us the gene belongs to that group rather than carry process-level information, which is
+  the main limit on how much the baseline's output can mean for gene function.
+
+**Taken together:** arm 1 assigns a few broad, widely carried terms very often and those are close to
+uninformative. Where it does well, it uses narrow, tissue-specific terms that overlap heavily and may reflect
+tissue identity. For arm 2 the useful checks are its term distribution against this one, its use of terms arm 1
+cannot reach, and its scores with the tissue-specific terms removed.
+""")
+
+
+# =============================================================================================
+# PART 4 -- the downward matches in detail
+# =============================================================================================
+md(r"""
+# Part 4 — the matches that are more specific than the truth
+
+A prediction can be more specific than a true term of the gene (the true term is an ancestor of the prediction,
+a "downward" relation). The question here is what these predictions look like when they have *only* that
+relation, i.e. when every true term they relate to is more general than they are. A prediction can also relate to
+two different true terms at once: more specific than one and more general than another. The classification used
+throughout the notebook labels such a prediction "upward" whichever is closer, so those cases are separated out
+below instead of being hidden inside the upward group.
+
+Produced by `scripts/analyze_arm1_downward_split.py` from the arm 1 cache.
+""")
+
+code(r"""
+ds = json.loads((RESULTS_DIR / "arm1_downward_split__all.json").read_text())
+dsplit = pd.DataFrame(ds["rows"])
+dcounts = ds["counts"]
+assert dcounts["only_down"] == t["n_downward_total"], "only-downward group must equal Part 1's downward count"
+print({k: v for k, v in dcounts.items()})
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 23. How many of the downward matches have only that relation?
+
+Every significant prediction that is more specific than at least one true term (689 in all), split by whether it
+ALSO is more general than another true term of the same gene:
+- **only more specific** -- every true term it relates to is more general than it. This is the group Part 1
+  counts as "downward".
+- **also more general, downward relation closer** -- it relates both ways and the more-specific relation is the
+  shorter one (fewer GO edges). Counted as "upward" in Part 1.
+- **also more general, upward relation closer or equal** -- it relates both ways and the more-general relation is
+  the shorter one or ties. Counted as "upward" in Part 1.
+""")
+
+code(r"""
+grp = pd.Series({
+    "only more specific\n(counted as downward)": dcounts["only_down"],
+    "also more general,\ndownward closer\n(counted as upward)": dcounts["both_down_closer"],
+    "also more general,\nupward closer or equal\n(counted as upward)": dcounts["both_up_closer_or_equal"],
+})
+n_down_rel = grp.sum()
+fig, ax = plt.subplots(figsize=(9, 3.8))
+bars = ax.barh(grp.index[::-1], grp.values[::-1], color=[COLORS["downward"], COLORS["upward"], COLORS["upward"]][::-1])
+bars[0].set_hatch("//"); bars[1].set_hatch("//")  # the two groups that Part 1 labels "upward" are hatched
+for bar, v in zip(bars, grp.values[::-1]):
+    ax.text(bar.get_width() + n_down_rel * 0.01, bar.get_y() + bar.get_height() / 2,
+            f"{v:,}  ({v / n_down_rel:.1%})", va="center", fontsize=10)
+ax.set_xlim(0, n_down_rel * 1.2)
+ax.set_xlabel(f"number of significant predictions that are more specific than a true term (of {n_down_rel:,})")
+ax.set_title("Downward matches: how many have only that relation?")
+fig.tight_layout()
+save(fig, "23_downward_only_split")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 24. How far apart are the predicted and the true term, in information content?
+
+For the group that is more specific than the truth and has only that relation, the information-content (IC)
+distance: IC(predicted) minus IC(true term), where the true term is the nearest ancestor of the prediction in GO
+edges. IC = -ln(fraction of genes carrying the term), so a distance of 1 means the prediction is about 2.7x
+rarer than the true term, 2 about 7x, 4 about 55x.
+- **Left**: histogram of that IC distance, with the median marked.
+- **Right**: the same distance split by how many GO edges separate the two terms, to show how well edges and IC
+  agree.
+""")
+
+code(r"""
+od = dsplit[dsplit["group"] == "only_down"].copy()
+med = od["ic_distance"].median()
+od["edges"] = od["d_down"].clip(upper=4).map(lambda d: "4+" if d >= 4 else str(int(d)))
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5), gridspec_kw={"width_ratios": [1.2, 1]})
+ax1.hist(od["ic_distance"], bins=np.arange(0, od["ic_distance"].max() + 0.5, 0.5), color=COLORS["downward"], edgecolor="white")
+ax1.axvline(med, color="black", linestyle="--", linewidth=1)
+ax1.text(med + 0.1, ax1.get_ylim()[1] * 0.95, f"median {med:.2f}", fontsize=9, va="top")
+ax1.set_xlabel("IC(predicted term) - IC(true term)   (higher = prediction more specific than the truth)")
+ax1.set_ylabel("number of predictions")
+ax1.set_title(f"IC distance of the {len(od):,} 'only more specific' matches")
+
+order_e = ["1", "2", "3", "4+"]
+data = [od.loc[od["edges"] == e, "ic_distance"] for e in order_e]
+bp = ax2.boxplot(data, tick_labels=[f"{e}\n(n={len(d)})" for e, d in zip(order_e, data)], patch_artist=True, showfliers=True)
+for patch in bp["boxes"]:
+    patch.set_facecolor(COLORS["downward"])
+ax2.set_xlabel("GO edges between the predicted term and the true term")
+ax2.set_ylabel("IC distance")
+ax2.set_title("IC distance by number of GO edges")
+fig.tight_layout()
+save(fig, "24_downward_ic_distance")
+plt.show()
+print(od["ic_distance"].describe().round(2).to_string())
+""")
+
+
+
+code(r"""
+# The spikes in the histogram are repeated (prediction, true term) pairs, so list the most common pairs.
+pairs_tbl = (od.groupby(["label", "true_label"])
+               .agg(n=("gene_id", "size"), median_ic_distance=("ic_distance", "median"), median_edges=("d_down", "median"))
+               .sort_values("n", ascending=False))
+print(f"{len(od):,} matches come from {len(pairs_tbl)} distinct (predicted term, true term) pairs over {od['gene_id'].nunique()} genes;"
+      f" the top 3 pairs cover {pairs_tbl['n'].head(3).sum() / len(od):.0%}, the top 10 cover {pairs_tbl['n'].head(10).sum() / len(od):.0%}")
+print("most common true terms:", od["true_label"].value_counts().head(5).to_dict())
+pairs_tbl.head(10).round(2)
+""")
+
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 25. Which true terms do the downward matches attach to, and how general are they?
+
+Plots 23-24 looked at the predictions. This looks at the other end: the gene's true GO term each 'only more
+specific' prediction is matched to (the nearest true ancestor, as in Plot 24).
+- **Left**: cumulative share of terms by information content (IC; low = general, high = specific). Orange: the
+  true terms that received at least one such match. Grey: every distinct term that appears as a direct
+  annotation of any gene analysed, as the reference for what a typical true term looks like.
+- **Right**: of all the distinct true terms in each IC range, how many received at least one such match.
+""")
+
+code(r"""
+all_true = pd.DataFrame(ds["all_true_terms"])
+hit_ids = set(od["true_term"])
+all_true["hit"] = all_true["go_id"].isin(hit_ids)
+hit = all_true[all_true["hit"]]
+by_true = (od.groupby("true_term")
+             .agg(label=("true_label", "first"), matches=("gene_id", "size"), genes=("gene_id", "nunique"),
+                  predicted_terms=("go_id", "nunique"), ic=("ic_true", "first"))
+             .sort_values("matches", ascending=False))
+n_any = len({t for lst in od["all_ancestor_true_terms"] for t in lst})
+print(f"{len(by_true)} distinct true terms receive the {len(od):,} 'only more specific' matches "
+      f"({n_any} if every true ancestor is counted); {(by_true['matches'] == 1).sum()} of them receive a single match")
+print(f"median IC: {hit['ic'].median():.2f} for those true terms vs {all_true['ic'].median():.2f} for all "
+      f"{len(all_true):,} distinct direct true terms; share of terms with IC < 3: "
+      f"{(hit['ic'] < 3).mean():.0%} vs {(all_true['ic'] < 3).mean():.1%}")
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
+for df, color, lab in [(all_true, "#999999", f"all {len(all_true):,} distinct true terms"),
+                       (hit, COLORS["downward"], f"{len(hit)} true terms that received a match")]:
+    x = np.sort(df["ic"].to_numpy())
+    ax1.step(x, np.arange(1, len(x) + 1) / len(x), where="post", color=color, linewidth=2, label=lab)
+ax1.set_xlabel("information content (IC) of the true term (low = general, high = specific)")
+ax1.set_ylabel("cumulative share of terms")
+ax1.set_title("How general are the true terms the matches attach to?")
+ax1.set_ylim(0, 1.3)  # free band above the curves for the legend
+ax1.set_yticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])  # a share cannot exceed 1
+ax1.legend(loc="upper left", fontsize=9)
+
+bins = [0, 2, 3, 4, 5, 6, 8, 10]
+all_true["bin"] = pd.cut(all_true["ic"], bins)
+tab = all_true.groupby("bin", observed=True).agg(n_terms=("go_id", "size"), n_hit=("hit", "sum"))
+xx = range(len(tab))
+ax2.bar(xx, tab["n_hit"] / tab["n_terms"], color=COLORS["downward"])
+for i, (n, h) in enumerate(zip(tab["n_terms"], tab["n_hit"])):
+    ax2.text(i, h / n + 0.005, f"{h} of {n:,}", ha="center", fontsize=9)
+ax2.set_xticks(list(xx)); ax2.set_xticklabels([f"{iv.left:g}-{iv.right:g}" for iv in tab.index])
+ax2.set_xlabel("IC range of the true term")
+ax2.set_ylabel("share of true terms that received a match")
+ax2.set_ylim(0, (tab["n_hit"] / tab["n_terms"]).max() * 1.2)
+ax2.set_title("Which true terms get matched, by specificity")
+fig.tight_layout()
+save(fig, "25_true_term_ic")
+plt.show()
+""")
+
+# ---------------------------------------------------------------------------------------------
+md(r"""
+## 26. How concentrated are the matches on a few true terms?
+
+The 15 true terms that receive the most 'only more specific' matches, with how many matches and genes each
+accounts for, how many different predicted terms attach to it, and its IC.
+""")
+
+code(r"""
+top = by_true.head(15)[::-1]
+fig, ax = plt.subplots(figsize=(10, 5.5))
+bars = ax.barh([short(l, 44) for l in top["label"]], top["matches"], color=COLORS["downward"])
+for bar, (_, r) in zip(bars, top.iterrows()):
+    ax.text(bar.get_width() + by_true["matches"].max() * 0.01, bar.get_y() + bar.get_height() / 2,
+            f"{r['matches']}  ({r['genes']} genes, {r['predicted_terms']} predicted term{'s' if r['predicted_terms'] != 1 else ''}, IC {r['ic']:.1f})",
+            va="center", fontsize=8)
+ax.set_xlim(0, by_true["matches"].max() * 1.75)
+ax.set_xlabel(f"number of 'only more specific' matches attached to the true term (of {len(od):,} in total)")
+ax.set_title(f"True terms receiving the matches (top 15 of {len(by_true)}; top 5 cover "
+             f"{by_true['matches'].head(5).sum() / len(od):.0%}, top 10 cover {by_true['matches'].head(10).sum() / len(od):.0%})")
+fig.tight_layout()
+save(fig, "26_true_term_concentration")
+plt.show()
+""")
+
+md(r"""
+## Part 4 summary
+
+- **Plot 23, how many downward matches have only that relation.** Of the 689 predictions that are more specific
+  than at least one true term, 644 (93.5%) have only that relation. 45 also are more general than another true
+  term of the same gene (11 with the more-specific relation closer, 34 with the more-general one closer or tied),
+  and the classification labels those upward.
+  *For us:* the mixed cases are too few to change anything. The 644 downward matches are exactly the "only more
+  specific" group, so Parts 1-3 already describe it, and a different tie-break between the two relations would
+  move at most 11 predictions.
+- **Plot 24, IC distance between predicted and true term.** These predictions are more specific than the truth by
+  a median of 3.82 IC units (middle half 2.36 to 4.10, range 0.03 to 8.31); 92% are at least 2 units more
+  specific (about 7x rarer) and 25% at least 4 (about 55x). More GO edges go with a larger IC distance on average,
+  but not cleanly: 3 edges have a lower median distance than 2 edges.
+  *For us:* a downward "match" is a much narrower claim than the true annotation, not a near miss. The histogram
+  is spiky because the matches are not 644 independent cases: they come from 74 distinct (prediction, true term)
+  pairs over 529 genes, and the top 3 pairs cover 45%. The true terms involved are very general ("immune response"
+  alone is the true term for 261 of the 644), so a typical downward match is an immune-cell term such as "T cell
+  mediated immunity" counted against a gene known only as "immune response". Such a match shows the gene is
+  immune-related, which is real information, but it is nowhere near the specific claim the prediction makes, so
+  downward matches should be reported separately from exact and upward ones (together with Plot 16, where most of
+  them turned out to be chance-level) and the true terms that make them possible should be named when results
+  are reported.
+- **Plot 25, the true terms the matches attach to.** All 644 matches attach to only 45 distinct true terms (47 if
+  every true ancestor is counted), and 12 of those 45 receive a single match. They are far more general than a
+  typical true term: median IC 3.74 against 7.94 for all 10,103 distinct direct true terms, and 31% of them have
+  an IC below 3 against 0.8% of all true terms. Of the true terms with IC up to 3, 14 of 85 receive a match; of
+  the 4,694 with IC above 8, none does.
+  *For us:* downward matches are only possible against general true terms, because a very specific true term has
+  almost no descendants among the 52 candidates. The size of the downward group is set by how many genes carry one
+  of a few general terms, not by the method, which is why it stays close to chance (Plot 16).
+- **Plot 26, concentration on a few true terms.** The top 5 true terms cover 71% of the matches and the top 10
+  cover 85%. "Immune response" alone takes 261 matches (213 genes), followed by chemical synaptic transmission
+  (74), cell migration (51), adaptive immune response (45) and cell-cell signaling (27); "immune system process"
+  receives matches from 6 different predicted terms.
+  *For us:* the downward result is three or four themes (immune, synaptic, migration), not broad coverage of gene
+  function. Reporting it as a count of matches overstates how much of GO is being recovered; reporting it as the
+  number of distinct true terms reached (45 of 10,103) gives a more honest picture.
 """)
 
 nb["cells"] = cells

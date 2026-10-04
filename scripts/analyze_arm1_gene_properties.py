@@ -15,7 +15,8 @@ rather than recomputed there:
   arm1_term_properties__<split>.json   one row per SIGNIFICANT term (not just the matches -- every
                                         outcome including no_match, so "does rank predict correctness"
                                         is answerable), with term_size, IC, rank, and (for real matches)
-                                        the matched truth term's GOA evidence codes
+                                        the matched truth term's GOA evidence codes and its IC gap
+                                        (ic_true - ic_predicted, signed) vs. the predicted term
 
 Both are checked against the already-validated match_summary__...json before being written, so a
 divergence in this richer extraction is caught immediately rather than silently trusted.
@@ -123,6 +124,18 @@ def main() -> None:
                 "p_gscs": enrichment[go_id]["p_gscs"], "term_size": enrichment[go_id]["term_size"],
                 "ic": sh.truth.go.ic(m.go_id),
             }
+            if m.kind in ("exact", "upward", "downward"):
+                # IC gap vs. the SPECIFIC true term that achieved the match's minimum distance
+                # (m.matched_term; for "exact" the matched true term is the predicted term itself).
+                # Signed as ic_true - ic_predicted: positive means the model under-shot specificity
+                # (predicted a broader/cheaper term than the real answer -- expected for "upward"),
+                # negative means it over-shot (predicted a narrower term than the real answer --
+                # expected for "downward"). IC = -ln(fraction of genes carrying the term), so a
+                # MORE SPECIFIC term has a HIGHER IC.
+                true_for_ic = m.go_id if m.kind == "exact" else m.matched_term
+                row["matched_term"] = true_for_ic
+                row["ic_true"] = sh.truth.go.ic(true_for_ic)
+                row["ic_gap"] = row["ic_true"] - row["ic"]
             if m.kind != "no_match":
                 # which of the gene's OWN true terms did this prediction relate to, and how well-evidenced
                 # is THAT specific (gene, true-term) pair? Upward: the true term is an ancestor-chain

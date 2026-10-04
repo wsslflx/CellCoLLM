@@ -40,6 +40,11 @@ class TermMatch:
     label: str
     kind: str          # one of EXACT, UPWARD, DOWNWARD, NO_MATCH
     distance: int | None  # edges; None for NO_MATCH
+    # The SPECIFIC true term that achieved the minimum distance above (not the full set of true
+    # terms the prediction relates to -- when several true terms are reachable, `distance` is the
+    # smallest of them, so this is the one true term that distance actually describes). None for
+    # EXACT (the true term IS go_id) and NO_MATCH (no related true term exists).
+    matched_term: str | None = None
 
 
 def classify_term(go: GOOntology, predicted_id: str, truth_direct: set[str]) -> TermMatch:
@@ -47,28 +52,30 @@ def classify_term(go: GOOntology, predicted_id: str, truth_direct: set[str]) -> 
     pid = go.resolve(predicted_id) or predicted_id
     label = go.label(pid)
     if pid in truth_direct:
-        return TermMatch(pid, label, EXACT, 0)
+        return TermMatch(pid, label, EXACT, 0, None)
 
     # upward: predicted term found while climbing from a true term
     up = None
+    up_term = None
     for t in truth_direct:
         d = go.ancestor_depths(t).get(pid)
         if d is not None and (up is None or d < up):
-            up = d
+            up, up_term = d, t
     if up is not None:
-        return TermMatch(pid, label, UPWARD, up)
+        return TermMatch(pid, label, UPWARD, up, up_term)
 
     # downward: a true term found while climbing from the predicted term
     pred_depths = go.ancestor_depths(pid)
     down = None
+    down_term = None
     for t in truth_direct:
         d = pred_depths.get(t)
         if d is not None and (down is None or d < down):
-            down = d
+            down, down_term = d, t
     if down is not None:
-        return TermMatch(pid, label, DOWNWARD, down)
+        return TermMatch(pid, label, DOWNWARD, down, down_term)
 
-    return TermMatch(pid, label, NO_MATCH, None)
+    return TermMatch(pid, label, NO_MATCH, None, None)
 
 
 def classify_terms(go: GOOntology, predicted_ids: list[str], truth_direct: set[str]) -> list[TermMatch]:

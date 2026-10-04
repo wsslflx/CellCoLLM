@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,9 @@ if _env_path.exists():
             _line = _line.strip()
             if _line and not _line.startswith("#") and "=" in _line:
                 _k, _, _v = _line.partition("=")
-                os.environ.setdefault(_k.strip(), _v.strip())
+                # a trailing " # comment" is not part of the value (e.g. CHAT_MODEL=x:latest  # was y)
+                _v = re.sub(r"\s+#.*$", "", _v.strip())
+                os.environ.setdefault(_k.strip(), _v)
 
 DEFAULT_BASE_URL = "https://dev.chat.cosy.bio/ollama"
 # No default chat model — model selection is an open, to-be-decided question
@@ -105,6 +108,11 @@ def make_chat_llm(model: str | None, temperature: float, **kwargs: Any):
     # unless reasoning is explicitly disabled (see PIPELINE_REQUIREMENTS.md §5.6).
     if "qwen3" in resolved.lower():
         kwargs.setdefault("reasoning", False)
+    # gpt-oss cannot switch reasoning off, only set its effort. Without this it reasons at its default
+    # effort, can spend the whole num_predict budget on hidden reasoning and returns an EMPTY answer
+    # (observed with format="json": empty content, JSON parse error at char 0).
+    elif "gpt-oss" in resolved.lower():
+        kwargs.setdefault("reasoning", "low")
     return ChatOllama(
         base_url=ollama_base_url(),
         model=resolved,

@@ -34,13 +34,24 @@ Usage:
     python scripts/run_go_experiment.py --split test --stage all
     python scripts/run_go_experiment.py --split smoke --stage all --dry-run
     python scripts/run_go_experiment.py --split all --condition go_enrichment:v1
+
+Long runs: add `--background`. The SAME command is relaunched detached from your terminal (survives closing
+it), with the Mac kept awake (`caffeinate`), unbuffered output going to a log file, and it prints the PID, the
+log path and how to follow or stop it. Works for any split / condition / stage / model, e.g.
+    python scripts/run_go_experiment.py --split all --condition go_llm:v3:freeform:true --model gpt-oss:120b --background
+A run is resumable (completed (condition, gene) pairs are skipped), so after a crash or a stop just run the
+same command again.
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import os
+import shutil
+import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -135,6 +146,53 @@ def all_dataset_genes() -> list[dict]:
     return [{"gene": g, "symbol": "", "stratum": ""} for g in read_gene_ids()]
 
 
+LOG_DIR = Path(__file__).parents[1] / "data" / "go_experiment" / "logs"
+
+
+def other_runs_active() -> list[str]:
+    """PIDs of other run_go_experiment.py processes. Two at once would run the same (condition, gene) pairs twice."""
+    out = subprocess.run(["pgrep", "-f", "scripts/run_go_experiment.py"], capture_output=True, text=True).stdout.split()
+    return [p for p in out if p != str(os.getpid())]
+
+
+def launch_background(args) -> None:
+    """Relaunch this exact command detached, kept awake, logging to a file; print how to follow and stop it."""
+    others = other_runs_active()
+    if others and not args.allow_parallel:
+        raise SystemExit(f"Another run_go_experiment.py is already running (PID {', '.join(others)}). Two runs at once "
+                         "would repeat the same (condition, gene) pairs. Stop it first, or pass --allow-parallel if "
+                         "they cover different genes or conditions.")
+    # the child gets the original arguments, minus the options that only control launching
+    argv, skip = [], 0
+    for a in sys.argv[1:]:
+        if skip:
+            skip -= 1
+        elif a == "--log-file":
+            skip = 1
+        elif a.startswith("--log-file=") or a in ("--background", "--allow-parallel"):
+            continue
+        else:
+            argv.append(a)
+    cmd = [sys.executable, "-u", str(Path(__file__).resolve())] + argv
+    if shutil.which("caffeinate"):
+        cmd = ["caffeinate", "-i"] + cmd  # macOS: do not let the machine sleep while the run is going
+    if args.log_file:
+        log = Path(args.log_file)
+    else:
+        tag = "_".join(c.replace(":", "-") for c in (args.conditions and [condition_key(c) for c in args.conditions] or [args.stage]))
+        log = LOG_DIR / f"run_{args.split}_{tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "ab") as f:
+        proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                start_new_session=True, cwd=str(Path(__file__).parents[1]))
+    print(f"started in the background, PID {proc.pid}")
+    print(f"  command: {' '.join(cmd)}")
+    print(f"  log:     {log}")
+    print(f"  follow:  tail -f {log}")
+    print(f"  stop:    kill {proc.pid}")
+    print("  resume:  run the same command again (completed runs are skipped)")
+
+
 def server_reachable() -> bool:
     import httpx
     from core.llm_backend import ollama_base_url, ollama_headers
@@ -160,8 +218,17 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="List what would run, run nothing")
     ap.add_argument("--allow-unfrozen", action="store_true",
                     help="Run the test split without a matching freeze (the runs are tagged unfrozen_override)")
+    ap.add_argument("--background", action="store_true",
+                    help="Relaunch this command detached (survives closing the terminal), kept awake, logging to a file")
+    ap.add_argument("--log-file", default=None, help="With --background: where to write the log "
+                    "(default data/go_experiment/logs/run_<split>_<conditions>_<time>.log)")
+    ap.add_argument("--allow-parallel", action="store_true",
+                    help="With --background: start even though another run_go_experiment.py is already running")
     args = ap.parse_args()
 
+    if args.background:
+        launch_background(args)
+        return
     if args.stratum and args.split == "all":
         raise SystemExit("--stratum needs a genes.tsv-based split (dev/test); --split all has no stratum.")
     if args.split == "smoke":
@@ -205,6 +272,7 @@ def main() -> None:
         print(f"  {n} {approach} runs were completed under DIFFERENT code and do not count — those conditions run again")
 
     t0, n_run, n_skip, n_fail, consecutive = time.time(), 0, 0, 0, 0
+    blind_skipped: list[str] = []  # genes whose prompt failed the blinding check
     total = len(genes) * len(conds)
     for gi, gene in enumerate(genes, 1):
         gid = gene["gene"]
@@ -230,7 +298,16 @@ def main() -> None:
                     LLM.run_gene(gid, sym, a, shared)
                 n_run += 1
                 consecutive = 0
-            except Exception as exc:  # a failed condition must not stop the batch; SystemExit (blinding) still does
+            except SystemExit as exc:
+                # run_go_llm raises SystemExit when the gene symbol appears in the prompt (blinding check). That is a
+                # property of this one gene (e.g. WAS matches the English word "was"), not a reason to stop 15,000
+                # others: skip the gene, keep a list, and say so in the final summary. Any other SystemExit stops.
+                if "Blinding check failed" not in str(exc):
+                    raise
+                blind_skipped.append(f"{sym} ({gid})")
+                print(f"  SKIPPED {key} {gid}: {exc}")
+                break  # the other conditions for this gene would fail the same way
+            except Exception as exc:  # a failed condition must not stop the batch
                 n_fail += 1
                 consecutive += 1
                 print(f"  FAILED {key} {gid}: {type(exc).__name__}: {exc}")
@@ -243,6 +320,9 @@ def main() -> None:
         print(f"[{gi}/{len(genes)}] {sym}: run {n_run}, skipped {n_skip}, failed {n_fail}  "
               f"elapsed {elapsed / 60:.1f} min, ETA ~{eta / 60:.0f} min")
     print(f"\nDone: {n_run} run, {n_skip} skipped, {n_fail} failed.")
+    if blind_skipped:
+        print(f"Skipped because the gene symbol appears in the prompt (blinding check), NOT run: "
+              f"{len(blind_skipped)} gene(s): {', '.join(blind_skipped)}")
     if n_fail:
         sys.exit(1)
 
