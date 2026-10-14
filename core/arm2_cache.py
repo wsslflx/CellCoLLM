@@ -8,6 +8,7 @@ The tables come from scripts/export_arm2_cache.py (run where the MLflow database
     c.runs         one row per gene that has ANY run (status, scores, latency, hypothesis, ...)
     c.done         the genes that are finished under the current code (status COMPLETED, current_code)
     c.predictions  one row per (finished gene, predicted term) with match kind and IC gap
+    c.invalid      one row per answer that did not resolve to a GO term (None if the export predates it)
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ class Arm2Cache:
     runs: pd.DataFrame
     predictions: pd.DataFrame
     meta: dict
+    invalid: pd.DataFrame | None = None   # answers that did not resolve to a GO term; None if the export predates this table
 
     @property
     def done(self) -> pd.DataFrame:
@@ -44,5 +46,7 @@ def load_arm2_cache(condition: str = DEFAULT_CONDITION, split: str = "all", cach
     if not runs_path.exists():
         raise FileNotFoundError(f"{runs_path} missing -- run scripts/export_arm2_cache.py on the machine with the MLflow database "
                                 "and copy the arm2_*.parquet files here")
+    inv_path = d / f"arm2_invalid__{name}.parquet"
     return Arm2Cache(pd.read_parquet(runs_path), pd.read_parquet(d / f"arm2_predictions__{name}.parquet"),
-                     json.loads((d / f"arm2_cache_meta__{name}.json").read_text()))
+                     json.loads((d / f"arm2_cache_meta__{name}.json").read_text()),
+                     pd.read_parquet(inv_path) if inv_path.exists() else None)

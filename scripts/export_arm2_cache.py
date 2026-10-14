@@ -12,6 +12,8 @@ Writes to data/go_experiment/cache/ (condition "go_llm:v3:freeform:true" -> go_l
   arm2_predictions__<cond>__<split>.parquet  one row per (COMPLETED gene, predicted term):
       rank, go_id, label, as_written, confidence, in_table (is the term one of the evidence terms),
       kind / distance / matched_term (core.go_match against the gene's direct true terms), ic, ic_true, ic_gap
+  arm2_invalid__<cond>__<split>.parquet      one row per (COMPLETED gene, answer that did not resolve to a GO term):
+      gene_id, symbol, term (the text exactly as the model wrote it)
   arm2_cache_meta__<cond>__<split>.json
 
 Which genes are MISSING is not decided here (this file only knows genes that have a run); the coverage analysis
@@ -109,15 +111,16 @@ def main() -> None:
     def load(g: str):
         r = chosen[g]
         if status_of(r) != "COMPLETED":
-            return g, None, None
+            return g, None, None, None
         return g, artifact_json(r["run_id"], r["artifact_uri"], "go_predictions.json"), \
-            artifact_json(r["run_id"], r["artifact_uri"], "response_parsed.json")
+            artifact_json(r["run_id"], r["artifact_uri"], "response_parsed.json"), \
+            artifact_json(r["run_id"], r["artifact_uri"], "invalid_predictions.json")  # only exists if a run had invalid answers
 
     with ThreadPoolExecutor(args.workers) as pool:
         loaded = list(pool.map(load, genes))
 
-    run_rows, pred_rows, mismatches, checked = [], [], [], 0
-    for g, preds, parsed in loaded:
+    run_rows, pred_rows, invalid_rows, mismatches, checked = [], [], [], [], 0
+    for g, preds, parsed, invalid in loaded:
         r = chosen[g]
         status = status_of(r)
         row = {"gene_id": g, "symbol": r.get("tags.gene_symbol"), "status": status, "run_id": r["run_id"],
@@ -127,6 +130,8 @@ def main() -> None:
         for m in METRICS:
             row[m] = r.get(f"metrics.{m}")
         run_rows.append(row)
+        if status == "COMPLETED" and isinstance(invalid, list):
+            invalid_rows += [{"gene_id": g, "symbol": row["symbol"], "term": str(t)} for t in invalid]
         if status != "COMPLETED" or preds is None or not sh.truth.has(g):
             continue
         td = sh.truth.annotations[g]
@@ -153,14 +158,16 @@ def main() -> None:
                 mismatches.append((g, stored, again))
 
     runs, preds_df = pd.DataFrame(run_rows), pd.DataFrame(pred_rows)
+    invalid_df = pd.DataFrame(invalid_rows, columns=["gene_id", "symbol", "term"])
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
     cond, split = safe_name(args.condition), args.gene_split
     runs.to_parquet(out / f"arm2_runs__{cond}__{split}.parquet", index=False)
     preds_df.to_parquet(out / f"arm2_predictions__{cond}__{split}.parquet", index=False)
+    invalid_df.to_parquet(out / f"arm2_invalid__{cond}__{split}.parquet", index=False)
     meta = {"condition": args.condition, "gene_split": split, "code_hash_current": current, "n_genes_with_run": len(runs),
             "status_counts": runs["status"].value_counts().to_dict() if len(runs) else {},
             "n_completed_current_code": int(((runs["status"] == "COMPLETED") & runs["current_code"]).sum()) if len(runs) else 0,
-            "models": sorted(set(runs["model"].dropna())) if len(runs) else [], "n_predictions": len(preds_df),
+            "models": sorted(set(runs["model"].dropna())) if len(runs) else [], "n_predictions": len(preds_df), "n_invalid_answers": len(invalid_df),
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     (out / f"arm2_cache_meta__{cond}__{split}.json").write_text(json.dumps(meta, indent=2))
     print(json.dumps(meta, indent=2))
@@ -172,7 +179,7 @@ def main() -> None:
         print(f"WARNING: runs were made with more than one model: {meta['models']}")
     if meta["n_completed_current_code"] < meta["status_counts"].get("COMPLETED", 0):
         print("NOTE: some COMPLETED runs belong to older code and are marked current_code=False")
-    print(f"Wrote {out}/arm2_runs__{cond}__{split}.parquet and arm2_predictions__{cond}__{split}.parquet")
+    print(f"Wrote arm2_runs, arm2_predictions and arm2_invalid ({len(invalid_df)} invalid answers) for {cond}__{split} to {out}")
 
 
 if __name__ == "__main__":
